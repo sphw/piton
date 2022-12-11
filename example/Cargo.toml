@@ -1,0 +1,17 @@
+[package]
+name = "example"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+thiserror = "1"
+piton = { path = "../lib"}
+bytecheck = { path = "../../bytecheck/bytecheck", default-features = false }
+flume = "0.10"
+oneshot = "0.1"
+
+
+[build-dependencies]
+piton-build = {path = "../build" }

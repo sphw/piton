@@ -1,0 +1,17 @@
+struct "Test" {
+ field "foo" "u16"
+ field "bar" "u32"
+ field "boolean" "bool"
+ field "array" "[u8; 20]"
+}
+struct "Foo" {
+ field "foo" "Test"
+ field "bar" "Bar"
+}
+enum "Bar" {
+  variant "test"
+  variant "b" "u8"
+}
+service "Driver" {
+   method "send" "Bar" "Test"
+}
