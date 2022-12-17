@@ -82,7 +82,7 @@ impl<const N: usize> ServerTransport for Server<N> {
         let mut buf = self.rx.recv();
         let id = usize::from_be_bytes(buf[..{ size_of::<usize>() }].try_into().map_err(|_| ())?);
         let msg_type = u32::from_be_bytes(
-                buf[{ size_of::<usize>() }..HEADER_LENGTH]
+            buf[{ size_of::<usize>() }..HEADER_LENGTH]
                 .try_into()
                 .map_err(|_| ())?,
         );

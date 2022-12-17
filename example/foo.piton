@@ -1,0 +1,24 @@
+struct Test {
+ foo: u16,
+ bar: u32,
+ boolean: bool,
+ array: [u8; 20]
+}
+
+struct Foo {
+ foo: Test,
+ bar: Bar
+}
+
+enum Bar {
+  Test,
+  B(u8)
+}
+
+service Driver {
+   method xyz(Bar) -> Test
+}
+
+bus TestBus {
+  msg foo(Foo)
+}

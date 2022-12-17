@@ -1,5 +1,8 @@
 #![no_std]
-use core::{marker::PhantomData, mem::{MaybeUninit, size_of}};
+use core::{
+    marker::PhantomData,
+    mem::{size_of, MaybeUninit},
+};
 
 pub trait Buf {
     fn can_insert<T>(&self) -> bool;
@@ -35,7 +38,9 @@ pub trait ClientTransport {
         R: bytecheck::CheckBytes<()> + 'r;
 
     fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
-    fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(&mut self) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
+    fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
+        &mut self,
+    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
         let buf = self.alloc(size_of::<T>() + 128)?;
         Ok(TypedBuf::new(buf).unwrap())
     }

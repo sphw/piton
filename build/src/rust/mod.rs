@@ -59,6 +59,8 @@ fn ty_to_rust(ty: &Ty) -> String {
         Ty::Bool => "bool".to_string(),
         Ty::Array { ty, len } => format!("[{}; {}]", ty_to_rust(ty), len),
         Ty::Unresolved(ty) => ty.to_string(),
+        Ty::F32 => todo!(),
+        Ty::F64 => todo!(),
     }
 }
 
@@ -71,28 +73,8 @@ impl crate::ServiceGenerator for ServiceGenerator {
         hasher.write(service.name.as_bytes());
         let addr = hasher.finish() as u32 & 0xFF000000;
         let trait_methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
-            let args = if let Some(arg_ty) = &method.arg_ty {
-                quote! { ,msg: &mut $(ty_to_rust(arg_ty)) }
-            } else {
-                quote! {}
-            };
-
-            let return_arg= if let Some(return_ty) = &method.return_ty {
-                let ty = ty_to_rust(return_ty);
-                quote! { ,resp: &mut piton::TypedBuf<T::BufW<'id>, $(ty)> }
-            } else {
-                quote! {}
-            };
-
-            let return_ty = if let Some(return_ty) = &method.return_ty {
-                let ty = ty_to_rust(return_ty);
-                quote! { piton::InsertToken<T::BufW<'id>, $(ty)> }
-            } else {
-                quote! { () }
-            };
-
             quote! {
-                fn $(method.name.to_case(Case::Snake))<'id>(&mut self $(args) $(return_arg)) -> Result<$(return_ty), T::Error>;
+                fn $(method.name.to_case(Case::Snake))<'id>(&mut self, msg: &mut $(ty_to_rust(&method.arg_ty)), resp: &mut piton::TypedBuf<T::BufW<'id>, $(ty_to_rust(&method.return_ty))>) -> Result<piton::InsertToken<T::BufW<'id>, $(ty_to_rust(&method.return_ty))>, T::Error>;
             }
         }).collect();
 
@@ -101,28 +83,10 @@ impl crate::ServiceGenerator for ServiceGenerator {
             .iter()
             .enumerate()
             .map(|(i, method)| {
-                let args = if method.arg_ty.is_some() {
-                    quote! { recv.req.as_mut().unwrap(), }
-                } else {
-                    quote! {}
-                };
-
-                let return_ty = if let Some(return_ty) = &method.return_ty {
-                    quote! { $(ty_to_rust(return_ty)) }
-                } else {
-                    quote! {()}
-                };
-
-                let return_arg = if method.return_ty.is_some() {
-                    quote! { &mut resp }
-                } else {
-                    quote! {}
-                };
-
                 quote! {
                     $(i as u32 | addr) => {
-                        let mut resp: piton::TypedBuf<T::BufW<'_>, $(return_ty)> = piton::TypedBuf::new(recv.resp).unwrap();
-                        self.service.$(method.name.to_case(Case::Snake))($(args) $(return_arg))?;
+                        let mut resp: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(&method.return_ty)) > = piton::TypedBuf::new(recv.resp).unwrap();
+                        self.service.$(method.name.to_case(Case::Snake))(recv.req.as_mut().unwrap(), &mut resp)?;
                         recv.responder.send(msg_type, resp)?;
                     }
                 }
@@ -167,26 +131,12 @@ impl crate::ServiceGenerator for ClientGenerator {
         let addr = hasher.finish() as u32 & 0xFF000000;
         let pascal_name = service.name.to_case(Case::Pascal);
         let methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
-            let args = if let Some(arg_ty) = &method.arg_ty {
-                quote! { msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>, }
-            } else {
-                quote! {}
-            };
-
-
-            let call_arg: rust::Tokens = if method.arg_ty.is_some() {
-                quote! { , msg }
-            }else { quote! {} };
-
-            let return_ty = if let Some(return_ty) = &method.return_ty {
-                quote! { piton::TypedBuf<T::BufR<'_>, $(ty_to_rust(return_ty))> }
-            } else {
-                quote! { () }
-            };
+            let arg_ty = &method.arg_ty;
+            let return_ty = &method.return_ty;
 
             quote! {
-                pub fn $(method.name.to_case(Case::Snake))(&mut self, $(args)) -> Result<$(return_ty), T::Error> {
-                    self.transport.call($(&pascal_name)Req::$(method.name.to_case(Case::Pascal)) as u32 | $(addr) $(call_arg))
+                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>) -> Result<piton::TypedBuf<T::BufR<'_>, $(ty_to_rust(return_ty))>, T::Error> {
+                    self.transport.call($(&pascal_name)Req::$(method.name.to_case(Case::Pascal)) as u32 | $(addr), msg )
                 }
             }
         }).collect();
