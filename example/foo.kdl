@@ -13,5 +13,5 @@ enum "Bar" {
   variant "b" "u8"
 }
 service "Driver" {
-   method "send" "Bar" "Test"
+   method "xyz" "Bar" "Test"
 }

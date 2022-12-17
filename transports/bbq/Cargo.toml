@@ -1,0 +1,12 @@
+[package]
+name = "piton-bbq"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+piton = { path = "../../lib"}
+bytecheck = { path = "../../../bytecheck/bytecheck", default-features = false }
+flume = "0.10"
+bbqueue = { path = "../../../bbqueue/core", features = ["alloc"] }

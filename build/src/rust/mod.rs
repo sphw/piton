@@ -79,14 +79,14 @@ impl crate::ServiceGenerator for ServiceGenerator {
 
             let return_arg= if let Some(return_ty) = &method.return_ty {
                 let ty = ty_to_rust(return_ty);
-                quote! { ,resp: &mut T::TypedBuf<'id, $(ty)> }
+                quote! { ,resp: &mut piton::TypedBuf<T::BufW<'id>, $(ty)> }
             } else {
                 quote! {}
             };
 
             let return_ty = if let Some(return_ty) = &method.return_ty {
                 let ty = ty_to_rust(return_ty);
-                quote! { piton::InsertToken<'id, T, $(ty)> }
+                quote! { piton::InsertToken<T::BufW<'id>, $(ty)> }
             } else {
                 quote! { () }
             };
@@ -121,7 +121,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
 
                 quote! {
                     $(i as u32 | addr) => {
-                        let mut resp: T::TypedBuf<'_, $(return_ty)> = T::TypedBuf::from_buf(recv.resp)?;
+                        let mut resp: piton::TypedBuf<T::BufW<'_>, $(return_ty)> = piton::TypedBuf::new(recv.resp).unwrap();
                         self.service.$(method.name.to_case(Case::Snake))($(args) $(return_arg))?;
                         recv.responder.send(msg_type, resp)?;
                     }
@@ -141,7 +141,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
 
             impl<T: piton::ServerTransport, S: $(&pascal_name)Service<T>> $(pascal_name)Server<T, S> {
                 pub fn run(mut self) -> Result<(), T::Error> {
-                    use piton::{TypedBuf, Responder, Buf};
+                    use piton::{Responder, Buf};
                     while let Some(mut recv) = self.transport.recv()? {
                         let msg_type = recv.msg_type;
                         #[allow(clippy::single_match)]
@@ -168,7 +168,7 @@ impl crate::ServiceGenerator for ClientGenerator {
         let pascal_name = service.name.to_case(Case::Pascal);
         let methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
             let args = if let Some(arg_ty) = &method.arg_ty {
-                quote! { msg: T::Buf<'_, $(ty_to_rust(arg_ty))>, }
+                quote! { msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>, }
             } else {
                 quote! {}
             };
@@ -179,7 +179,7 @@ impl crate::ServiceGenerator for ClientGenerator {
             }else { quote! {} };
 
             let return_ty = if let Some(return_ty) = &method.return_ty {
-                quote! { T::Buf<'_, $(ty_to_rust(return_ty))> }
+                quote! { piton::TypedBuf<T::BufR<'_>, $(ty_to_rust(return_ty))> }
             } else {
                 quote! { () }
             };

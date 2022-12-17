@@ -2,5 +2,6 @@
 members = [
   "lib",
   "build",
-  "example"
+  "example",
+  "transports/bbq"
 ]

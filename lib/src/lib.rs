@@ -1,82 +1,108 @@
 #![no_std]
-use core::mem::MaybeUninit;
+use core::{marker::PhantomData, mem::{MaybeUninit, size_of}};
 
 pub trait Buf {
-    type Error;
-    type InsertToken<T>;
-
-    fn insert<T>(&mut self, obj: T) -> Result<Self::InsertToken<T>, Self::Error>;
-    fn as_maybe_uninit<T>(&mut self) -> &mut MaybeUninit<T>;
+    fn can_insert<T>(&self) -> bool;
 
     fn as_ref<T: bytecheck::CheckBytes<()>>(&self) -> Option<&T>;
     fn as_mut<T: bytecheck::CheckBytes<()>>(&mut self) -> Option<&mut T>;
-}
 
-pub trait TypedBuf<T: bytecheck::CheckBytes<()>> {
-    type Buf: Buf;
-    type InsertToken;
-
-    fn insert(&mut self, obj: T) -> Self::InsertToken;
-    fn as_maybe_uninit(&mut self) -> &mut MaybeUninit<T>;
-    fn as_ref(&self) -> Option<&T>;
-    fn as_mut(&mut self) -> Option<&mut T>;
-
-    fn from_buf(buf: Self::Buf) -> Result<Self, <Self::Buf as Buf>::Error>
-    where
-        Self: Sized;
+    /// # Safety
+    /// This function assumes that the caller used `can_insert` to determine if
+    /// `T` will fit in the buffer. Undefined behavior abound if you call this without checking
+    /// size first
+    unsafe fn as_maybe_uninit<T>(&mut self) -> &mut MaybeUninit<T>;
 }
 
 pub trait ClientTransport {
-    type Buf<'r, T: bytecheck::CheckBytes<()>>: TypedBuf<T> + 'r
+    type BufW<'r>: Buf + 'r
     where
-        T: 'r;
+        Self: 'r;
+
+    type BufR<'r>: Buf + 'r
+    where
+        Self: 'r;
+
     type Error;
 
     fn call<'r, 'm, M, R>(
         &'r mut self,
         req_type: u32,
-        msg: Self::Buf<'m, M>,
-    ) -> Result<Self::Buf<'r, R>, Self::Error>
+        msg: TypedBuf<Self::BufW<'m>, M>,
+    ) -> Result<TypedBuf<Self::BufR<'r>, R>, Self::Error>
     where
         M: bytecheck::CheckBytes<()> + 'm,
         R: bytecheck::CheckBytes<()> + 'r;
 
-    fn send<'r, 'm, M, R>(
-        &'r mut self,
-        req_type: u32,
-        msg: Self::Buf<'m, M>,
-    ) -> Result<(), Self::Error>
-    where
-        M: bytecheck::CheckBytes<()> + 'm;
-
-    fn alloc<'r, T>(&mut self) -> Result<Self::Buf<'r, T>, Self::Error>
-    where
-        T: bytecheck::CheckBytes<()>;
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
+    fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(&mut self) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
+        let buf = self.alloc(size_of::<T>() + 128)?;
+        Ok(TypedBuf::new(buf).unwrap())
+    }
 }
-
-pub type InsertToken<'r, T, M> =
-    <<T as ServerTransport>::TypedBuf<'r, M> as TypedBuf<M>>::InsertToken;
 
 pub trait ServerTransport {
     type Responder<'a>: Responder<Error = Self::Error, ServerTransport = Self> + 'a
     where
         Self: 'a;
-    type Buf<'r>: Buf<Error = Self::Error> + 'r
+    type BufR<'r>: Buf + 'r
     where
         Self: 'r;
-    type TypedBuf<'r, M>: TypedBuf<M, Buf = Self::Buf<'r>> + 'r
+    type BufW<'r>: Buf + 'r
     where
-        M: bytecheck::CheckBytes<()> + 'r,
         Self: 'r;
+
     type Error;
 
     #[allow(clippy::type_complexity)]
-    fn recv(&mut self) -> Result<Option<Recv<Self::Buf<'_>, Self::Responder<'_>>>, Self::Error>;
+    fn recv(
+        &mut self,
+    ) -> Result<Option<Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Self::Error>;
 }
 
-pub struct Recv<B, R> {
-    pub req: B,
-    pub resp: B,
+pub struct TypedBuf<B, T> {
+    pub buf: B,
+    _phantom: PhantomData<T>,
+}
+
+impl<T: bytecheck::CheckBytes<()>, B: Buf> TypedBuf<B, T> {
+    pub fn new(buf: B) -> Option<Self> {
+        if !buf.can_insert::<T>() {
+            return None;
+        }
+        Some(Self {
+            buf,
+            _phantom: PhantomData,
+        })
+    }
+
+    pub fn insert(&mut self, obj: T) -> InsertToken<B, T> {
+        unsafe {
+            self.buf.as_maybe_uninit().write(obj);
+            InsertToken::new()
+        }
+    }
+
+    pub fn as_ref(&self) -> Option<&T> {
+        self.buf.as_ref()
+    }
+
+    pub fn as_mut(&mut self) -> Option<&mut T> {
+        self.buf.as_mut()
+    }
+}
+
+pub struct InsertToken<B, T>(PhantomData<(B, T)>);
+
+impl<B, T> InsertToken<B, T> {
+    unsafe fn new() -> InsertToken<B, T> {
+        InsertToken(PhantomData)
+    }
+}
+
+pub struct Recv<BW, BR, R> {
+    pub req: BR,
+    pub resp: BW,
     pub responder: R,
     pub msg_type: u32,
 }
@@ -88,7 +114,7 @@ pub trait Responder {
     fn send<'r, 'm, M>(
         self,
         req_type: u32,
-        msg: <Self::ServerTransport as ServerTransport>::TypedBuf<'m, M>,
+        msg: TypedBuf<<Self::ServerTransport as ServerTransport>::BufW<'m>, M>,
     ) -> Result<(), Self::Error>
     where
         M: bytecheck::CheckBytes<()> + 'm;

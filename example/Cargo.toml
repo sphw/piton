@@ -11,6 +11,9 @@ piton = { path = "../lib"}
 bytecheck = { path = "../../bytecheck/bytecheck", default-features = false }
 flume = "0.10"
 oneshot = "0.1"
+bbqueue = { path = "../../bbqueue/core", features = ["alloc"] }
+spin = "0.9"
+piton-bbq = { path = "../transports/bbq" }
 
 
 [build-dependencies]
