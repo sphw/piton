@@ -94,7 +94,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
             .collect();
 
         let tokens: rust::Tokens = quote! {
-            pub trait $(&pascal_name)Service<T: piton::ServerTransport> {
+            pub trait $(&pascal_name)Service<T: piton::ServiceRx> {
                 $(for method in trait_methods => $(method))
             }
 
@@ -103,7 +103,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
                 pub service: S,
             }
 
-            impl<T: piton::ServerTransport, S: $(&pascal_name)Service<T>> $(pascal_name)Server<T, S> {
+            impl<T: piton::ServiceRx, S: $(&pascal_name)Service<T>> $(pascal_name)Server<T, S> {
                 pub fn run(mut self) -> Result<(), T::Error> {
                     use piton::{Responder, Buf};
                     while let Some(mut recv) = self.transport.recv()? {
@@ -145,7 +145,7 @@ impl crate::ServiceGenerator for ClientGenerator {
                 pub transport: T
             }
 
-            impl<T: piton::ClientTransport> $(&pascal_name)Client<T> {
+            impl<T: piton::ServiceTx> $(&pascal_name)Client<T> {
                 $(for method in methods => $(method))
             }
         };
@@ -164,6 +164,106 @@ impl crate::ServiceGenerator for ReqGenerator {
             }
         };
         Ok(tokens.to_file_string().unwrap())
+    }
+}
+
+pub struct MsgGenerator;
+impl crate::BusGenerator for MsgGenerator {
+    fn generate_bus(&self, bus: &crate::Bus) -> miette::Result<String> {
+        let pascal_name = bus.name.to_case(Case::Pascal);
+        let tokens: rust::Tokens = quote! {
+            #[repr(u32)]
+            pub enum $(&pascal_name)Msg {
+                $(for (i, method) in bus.msgs.iter().enumerate() => $(method.name.to_case(Case::Pascal)) = $(i),)
+            }
+        };
+        Ok(tokens.to_file_string().unwrap())
+    }
+}
+
+pub struct BusTxGenerator;
+
+impl crate::BusGenerator for BusTxGenerator {
+    fn generate_bus(&self, service: &crate::Bus) -> miette::Result<String> {
+        let mut hasher = DefaultHasher::default();
+        hasher.write(service.name.as_bytes());
+        let addr = hasher.finish() as u32 & 0xFF000000;
+        let pascal_name = service.name.to_case(Case::Pascal);
+        let methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
+            let arg_ty = &method.ty;
+
+            quote! {
+                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>) -> Result<(), T::Error> {
+                    self.transport.send($(&pascal_name)Msg::$(method.name.to_case(Case::Pascal)) as u32 | $(addr), msg )
+                }
+            }
+        }).collect();
+        let tokens: rust::Tokens = quote! {
+            pub struct $(&pascal_name)Client<T> {
+                pub transport: T
+            }
+
+            impl<T: piton::BusTx> $(&pascal_name)Client<T> {
+                $(for method in methods => $(method))
+            }
+        };
+        tokens.to_file_string().into_diagnostic()
+    }
+}
+
+pub struct BusRxGenerator;
+
+impl crate::BusGenerator for BusRxGenerator {
+    fn generate_bus(&self, service: &crate::Bus) -> miette::Result<String> {
+        let pascal_name = service.name.to_case(Case::Pascal);
+        let mut hasher = DefaultHasher::default();
+        hasher.write(service.name.as_bytes());
+        let addr = hasher.finish() as u32 & 0xFF000000;
+        let trait_methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
+            quote! {
+                fn $(method.name.to_case(Case::Snake))(&mut self, msg: &mut $(ty_to_rust(&method.ty))) -> Result<(), T::Error>;
+            }
+        }).collect();
+
+        let match_arms: Vec<rust::Tokens> = service
+            .msgs
+            .iter()
+            .enumerate()
+            .map(|(i, method)| {
+                quote! {
+                    $(i as u32 | addr) => {
+                        self.service.$(method.name.to_case(Case::Snake))(recv.req.as_mut().unwrap())?;
+                    }
+                }
+            })
+            .collect();
+
+        let tokens: rust::Tokens = quote! {
+            pub trait $(&pascal_name)Service<T: piton::BusRx> {
+                $(for method in trait_methods => $(method))
+            }
+
+            pub struct $(&pascal_name)Server<T, S> {
+                pub transport: T,
+                pub service: S,
+            }
+
+            impl<T: piton::BusRx, S: $(&pascal_name)Service<T>> $(pascal_name)Server<T, S> {
+                pub fn run(mut self) -> Result<(), T::Error> {
+                    use piton::Buf;
+                    while let Some(mut recv) = self.transport.recv()? {
+                        let msg_type = recv.msg_type;
+                        #[allow(clippy::single_match)]
+                        match msg_type {
+                            $(for arm in match_arms => $(arm))
+                            _ => {}
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        };
+        tokens.to_file_string().into_diagnostic()
     }
 }
 

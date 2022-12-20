@@ -245,7 +245,6 @@ pub trait BusGenerator {
     fn generate_bus(&self, service: &Bus) -> miette::Result<String>;
 }
 
-
 impl FromStr for Ty {
     type Err = &'static str;
 
@@ -317,12 +316,15 @@ impl RustBuilder {
         }
         if self.server {
             o += &rust::ServiceGenerator.generate(&exprs)?;
+            o += &rust::BusRxGenerator.generate(&exprs)?;
         }
         if self.client {
             o += &rust::ClientGenerator.generate(&exprs)?;
+            o += &rust::BusTxGenerator.generate(&exprs)?;
         }
         if self.client || self.server {
             o += &rust::ReqGenerator.generate(&exprs)?;
+            o += &rust::MsgGenerator.generate(&exprs)?;
         }
         let out =
             &PathBuf::from(env::var_os("OUT_DIR").ok_or_else(|| miette::miette!("no out dir"))?);

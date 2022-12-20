@@ -1,7 +1,7 @@
 use std::marker::PhantomData;
 
 use driver::DriverService;
-use piton::{ClientTransport, ServerTransport};
+use piton::{ServiceRx, ServiceTx};
 use piton_bbq::*;
 
 #[allow(unused_variables)]
@@ -22,7 +22,7 @@ impl<T> Service<T> {
     }
 }
 
-impl<T: ServerTransport> DriverService<T> for Service<T> {
+impl<T: ServiceRx> DriverService<T> for Service<T> {
     fn xyz<'t>(
         &mut self,
         msg: &mut driver::Bar,
