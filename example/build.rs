@@ -3,6 +3,6 @@ fn main() {
         .server()
         .client()
         .types()
-        .build("./foo.kdl")
+        .build("./foo.piton")
         .unwrap()
 }

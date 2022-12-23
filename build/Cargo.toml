@@ -11,3 +11,4 @@ knuffel = "2.0.0"
 smol_str = "0.1"
 miette = { version="4.3.0", features=["fancy"] }
 genco = "0.17"
+peg = "0.7"

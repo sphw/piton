@@ -1,129 +1,132 @@
 mod rust;
 
 use std::{
-    collections::HashSet,
     env, fs,
     path::{Path, PathBuf},
     str::FromStr,
 };
 
 use knuffel::traits::ErrorSpan;
-use miette::{miette, IntoDiagnostic};
-use smol_str::SmolStr;
-#[derive(Debug, knuffel::Decode, PartialEq, Eq)]
-pub struct Document {
-    #[knuffel(children(name = "struct"))]
-    structs: Vec<Struct>,
-    #[knuffel(children(name = "enum"))]
-    enums: Vec<Enum>,
-    #[knuffel(children(name = "service"))]
-    services: Vec<Service>,
+use miette::IntoDiagnostic;
+
+pub enum Expr {
+    Struct(Struct),
+    Enum(Enum),
+    Service(Service),
+    Bus(Bus),
 }
 
-impl Document {
-    fn validate(&self) -> Result<(), miette::Report> {
-        let mut ty_set: HashSet<String> = HashSet::default();
-        for s in &self.structs {
-            ty_set.insert(s.name.clone());
-        }
-        for e in &self.enums {
-            ty_set.insert(e.name.clone());
-            let mut variants: HashSet<String> = HashSet::default();
-            for variant in &e.variants {
-                if variants.contains(&variant.name) {
-                    return Err(miette!("duplicate variant name {}", variant.name));
-                }
-                variants.insert(variant.name.clone());
-            }
-        }
-        let unresolved_tys = self
-            .structs
-            .iter()
-            .flat_map(|s| &s.fields)
-            .map(|s| &s.ty)
-            .chain(
-                self.enums
-                    .iter()
-                    .flat_map(|e| &e.variants)
-                    .filter_map(|f| f.ty.as_ref()),
-            )
-            .chain(
-                self.services
-                    .iter()
-                    .flat_map(|s| &s.methods)
-                    .filter_map(|m| m.arg_ty.as_ref()),
-            )
-            .chain(
-                self.services
-                    .iter()
-                    .flat_map(|s| &s.methods)
-                    .filter_map(|m| m.return_ty.as_ref()),
-            )
-            .filter_map(|ty| match &ty {
-                Ty::Array { ty, .. } => match ty.as_ref() {
-                    Ty::Unresolved(ty_str) => Some(ty_str.clone()),
-                    _ => None,
-                },
-                Ty::Unresolved(ty) => Some(ty.clone()),
-                _ => None,
-            });
-        for ty in unresolved_tys {
-            if !ty_set.contains(&ty.to_string()) {
-                return Err(miette!("unknown type {}", ty));
-            }
-        }
-        Ok(())
+peg::parser! {
+    pub grammar piton_parser() for str {
+        rule ty() -> Ty
+            = "u8" { Ty::U8 }
+            / "u16" { Ty::U16 }
+            / "u32" { Ty::U32 }
+            / "u64" { Ty::U64 }
+            / "i8" { Ty::I8 }
+            / "i16" { Ty::I16 }
+            / "i32" { Ty::I32 }
+            / "i64" { Ty::I64 }
+            / "f32" { Ty::F32 }
+            / "f64" { Ty::F64 }
+            / "bool" { Ty::Bool }
+            / "[" _ ty:ty() ";" _ len:uint() _ "]" { Ty::Array { ty: Box::new(ty), len } }
+            / ty:symbol() { Ty::Unresolved(ty) }
+
+        rule symbol() -> String
+            = s:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { s.into() }
+
+       rule uint() -> usize
+            = n:$(['0'..='9']+) {? n.parse().map_err(|_| "number failed to parse") }
+
+        rule struct_def() -> Struct
+            = "struct" _ name:symbol() _ "{" _ fields:(field() ** ("," _)) _ "}" { Struct { name, fields } }
+
+        rule field() -> Field
+            = name:symbol() ":" _ ty:ty() { Field { name , ty }}
+
+        rule enum_def() -> Enum
+            = "enum" _ name:symbol() _ "{" _ variants:(variant() ** ("," _)) _ "}" { Enum { name, variants }}
+
+        rule variant() -> Variant
+            = name:symbol() ty:variant_ty()? { Variant { name, ty } }
+
+        rule variant_ty() -> Ty
+            = "(" ty:ty() ")" { ty }
+
+        rule service_def() -> Service
+            = "service" _ name:symbol() _ "{" _ methods:(method() ** ",") _ "}" { Service { name, methods }}
+
+        rule method() -> Method
+            = "method" _ name:symbol() _ "(" arg_ty:ty() ")" _ "->" _ return_ty:ty() { Method { name, arg_ty, return_ty }}
+
+        rule bus_def() -> Bus
+            = "bus" _ name:symbol() _ "{" _ msgs:(msg() ** ",") _ "}" { Bus { name, msgs  }}
+
+        rule msg() -> Msg
+            = "msg" _ name:symbol() "(" ty:ty() ")"  { Msg { name, ty }}
+
+        rule expr() -> Expr
+            = s:struct_def() { Expr::Struct(s) }
+            / e:enum_def() { Expr::Enum(e) }
+            / s:service_def() { Expr::Service(s) }
+            / b:bus_def() { Expr::Bus(b) }
+
+
+        rule _() = quiet!{[' ' | '\n' | '\t']*}
+
+        pub rule exprs() -> Vec<Expr>
+            = exprs:(expr:expr() ** _) _ { exprs }
     }
 }
 
-#[derive(knuffel::Decode, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Struct {
-    #[knuffel(argument)]
     name: String,
-    #[knuffel(children(name = "field"))]
     fields: Vec<Field>,
 }
 
-#[derive(knuffel::Decode, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Field {
-    #[knuffel(argument)]
     name: String,
-    #[knuffel(argument)]
     ty: Ty,
 }
 
-#[derive(knuffel::Decode, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Enum {
-    #[knuffel(argument)]
     name: String,
-    #[knuffel(children(name = "variant"))]
     variants: Vec<Variant>,
 }
 
-#[derive(knuffel::Decode, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 struct Variant {
-    #[knuffel(argument)]
     name: String,
-    #[knuffel(argument)]
     ty: Option<Ty>,
 }
 
-#[derive(knuffel::Decode, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Service {
-    #[knuffel(argument)]
     pub name: String,
-    #[knuffel(children(name = "method"))]
     pub methods: Vec<Method>,
 }
 
-#[derive(knuffel::Decode, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Method {
-    #[knuffel(argument)]
     pub name: String,
-    #[knuffel(argument)]
-    pub arg_ty: Option<Ty>,
-    #[knuffel(argument)]
-    pub return_ty: Option<Ty>,
+    pub arg_ty: Ty,
+    pub return_ty: Ty,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Bus {
+    pub name: String,
+    pub msgs: Vec<Msg>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Msg {
+    pub name: String,
+    pub ty: Ty,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -136,9 +139,11 @@ pub enum Ty {
     I32,
     I16,
     I8,
+    F32,
+    F64,
     Bool,
     Array { ty: Box<Ty>, len: usize },
-    Unresolved(SmolStr),
+    Unresolved(String),
 }
 
 impl<S: ErrorSpan> knuffel::DecodeScalar<S> for Ty {
@@ -179,12 +184,14 @@ impl<S: ErrorSpan> knuffel::DecodeScalar<S> for Ty {
 }
 
 pub trait TypeGenerator {
-    fn generate(&self, doc: &Document) -> miette::Result<String> {
+    fn generate(&self, doc: &[Expr]) -> miette::Result<String> {
         let strings = doc
-            .structs
             .iter()
-            .map(|s| self.generate_struct(s))
-            .chain(doc.enums.iter().map(|e| self.generate_enum(e)))
+            .map(|e| match e {
+                Expr::Struct(s) => self.generate_struct(s),
+                Expr::Enum(e) => self.generate_enum(e),
+                _ => Ok(String::default()),
+            })
             .collect::<miette::Result<Vec<_>>>()?;
         Ok(strings.into_iter().fold(String::default(), |mut xs, x| {
             xs += &x;
@@ -197,11 +204,16 @@ pub trait TypeGenerator {
 }
 
 pub trait ServiceGenerator {
-    fn generate(&self, doc: &Document) -> miette::Result<String> {
+    fn generate(&self, doc: &[Expr]) -> miette::Result<String> {
         let strings = doc
-            .services
             .iter()
-            .map(|s| self.generate_service(s))
+            .map(|e| {
+                if let Expr::Service(s) = e {
+                    self.generate_service(s)
+                } else {
+                    Ok(String::default())
+                }
+            })
             .collect::<miette::Result<Vec<_>>>()?;
         Ok(strings.into_iter().fold(String::default(), |mut xs, x| {
             xs += &x;
@@ -210,6 +222,27 @@ pub trait ServiceGenerator {
         }))
     }
     fn generate_service(&self, service: &Service) -> miette::Result<String>;
+}
+
+pub trait BusGenerator {
+    fn generate(&self, doc: &[Expr]) -> miette::Result<String> {
+        let strings = doc
+            .iter()
+            .map(|e| {
+                if let Expr::Bus(b) = e {
+                    self.generate_bus(b)
+                } else {
+                    Ok(String::default())
+                }
+            })
+            .collect::<miette::Result<Vec<_>>>()?;
+        Ok(strings.into_iter().fold(String::default(), |mut xs, x| {
+            xs += &x;
+            xs += "\n";
+            xs
+        }))
+    }
+    fn generate_bus(&self, service: &Bus) -> miette::Result<String>;
 }
 
 impl FromStr for Ty {
@@ -276,25 +309,22 @@ impl RustBuilder {
     pub fn build(self, path: impl AsRef<Path>) -> miette::Result<()> {
         let path = path.as_ref();
         let doc = std::fs::read_to_string(path).into_diagnostic()?;
-        let doc: Document = knuffel::parse(
-            path.file_name()
-                .and_then(|f| f.to_str())
-                .ok_or_else(|| miette::miette!("invalid file name"))?,
-            &doc,
-        )?;
-        doc.validate()?;
+        let exprs = piton_parser::exprs(&doc).into_diagnostic()?;
         let mut o = String::default();
         if self.types {
-            o += &rust::TypeGenerator.generate(&doc)?;
+            o += &rust::TypeGenerator.generate(&exprs)?;
         }
         if self.server {
-            o += &rust::ServiceGenerator.generate(&doc)?;
+            o += &rust::ServiceGenerator.generate(&exprs)?;
+            o += &rust::BusRxGenerator.generate(&exprs)?;
         }
         if self.client {
-            o += &rust::ClientGenerator.generate(&doc)?;
+            o += &rust::ClientGenerator.generate(&exprs)?;
+            o += &rust::BusTxGenerator.generate(&exprs)?;
         }
         if self.client || self.server {
-            o += &rust::ReqGenerator.generate(&doc)?;
+            o += &rust::ReqGenerator.generate(&exprs)?;
+            o += &rust::MsgGenerator.generate(&exprs)?;
         }
         let out =
             &PathBuf::from(env::var_os("OUT_DIR").ok_or_else(|| miette::miette!("no out dir"))?);
@@ -304,118 +334,5 @@ impl RustBuilder {
             .ok_or_else(|| miette::miette!("invalid file stem"))?;
         fs::write(out.join(format!("{}.rs", file_stem)), o).into_diagnostic()?;
         Ok(())
-    }
-}
-
-// pub fn build_server(path: impl AsRef<Path>) -> miette::Result<()> {
-// }
-
-// pub fn build_client(path: impl AsRef<Path>) -> miette::Result<()> {
-//     let path = path.as_ref();
-//     let doc = std::fs::read_to_string(path).into_diagnostic()?;
-//     let doc: Document = knuffel::parse(
-//         path.file_name()
-//             .and_then(|f| f.to_str())
-//             .ok_or_else(|| miette::miette!("invalid file name"))?,
-//         &doc,
-//     )?;
-//     doc.validate()?;
-//     let types = rust::TypeGenerator.generate(&doc)?;
-//     let services = rust::ClientGenerator.generate(&doc)?;
-//     let mut doc = types;
-//     doc += "\n";
-//     doc += &services;
-//     let out = &PathBuf::from(env::var_os("OUT_DIR").ok_or_else(|| miette::miette!("no out dir"))?);
-//     let file_stem = path
-//         .file_stem()
-//         .and_then(|f| f.to_str())
-//         .ok_or_else(|| miette::miette!("invalid file stem"))?;
-//     fs::write(out.join(format!("{}-client.rs", file_stem)), doc).into_diagnostic()?;
-//     Ok(())
-// }
-
-#[cfg(test)]
-mod tests {
-    use crate::{Field, Struct, Ty};
-
-    #[test]
-    fn test_decode() {
-        let doc = r#"
-struct "Test" {
- field "foo" "u16"
- field "bar" "u32"
- field "boolean" "bool"
- field "array" "[u8; 20]"
-}
-    "#;
-        let doc: crate::Document = knuffel::parse("test.kdl", doc).unwrap();
-        assert_eq!(
-            doc.structs[0],
-            Struct {
-                name: "Test".to_string(),
-                fields: vec![
-                    Field {
-                        name: "foo".to_string(),
-                        ty: Ty::U16
-                    },
-                    Field {
-                        name: "bar".to_string(),
-                        ty: Ty::U32
-                    },
-                    Field {
-                        name: "boolean".to_string(),
-                        ty: Ty::Bool
-                    },
-                    Field {
-                        name: "array".to_string(),
-                        ty: Ty::Array {
-                            ty: Box::new(Ty::U8),
-                            len: 20
-                        }
-                    },
-                ]
-            }
-        )
-    }
-
-    #[test]
-    fn test_validate() {
-        let doc = r#"
-struct "Test" {
- field "foo" "u16"
- field "bar" "u32"
- field "boolean" "bool"
- field "array" "[u8; 20]"
-}
-struct "Foo" {
- field "foo" "Foo"
- field "bar" "Bar"
-}
-enum "Bar" {
-  variant "test"
-  variant "b" "u8"
-}
-service "Driver" {
-   method "send" "Bar" "Foo"
-   method "close"
-}
-"#;
-        let doc: crate::Document = knuffel::parse("test.kdl", doc).unwrap();
-        doc.validate().expect("validate failed");
-        let invalid_enum = r#"
-enum "Bar" {
-  variant "b"
-  variant "b" "u8"
-}
-"#;
-        let doc: crate::Document = knuffel::parse("test.kdl", invalid_enum).unwrap();
-        doc.validate().expect_err("validate failed");
-        let invalid_type = r#"
-enum "Bar" {
-  variant "b" "Foo"
-}
-"#;
-        let doc: crate::Document = knuffel::parse("test.kdl", invalid_type).unwrap();
-        doc.validate().expect_err("validate failed");
     }
 }

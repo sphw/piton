@@ -8,7 +8,7 @@ use core::{
 };
 
 use bbqueue::{framed::FrameGrantR, BufStorage};
-use piton::ServerTransport;
+use piton::ServiceRx;
 
 pub type Storage<const N: usize = { 4094 * 4 }> = Arc<BufStorage<N>>;
 
@@ -66,7 +66,7 @@ impl<const N: usize> Server<N> {
     }
 }
 
-impl<const N: usize> ServerTransport for Server<N> {
+impl<const N: usize> ServiceRx for Server<N> {
     type Responder<'a> = Responder<'a, N>;
 
     type BufR<'r> = BufR<N>;
@@ -82,7 +82,7 @@ impl<const N: usize> ServerTransport for Server<N> {
         let mut buf = self.rx.recv();
         let id = usize::from_be_bytes(buf[..{ size_of::<usize>() }].try_into().map_err(|_| ())?);
         let msg_type = u32::from_be_bytes(
-                buf[{ size_of::<usize>() }..HEADER_LENGTH]
+            buf[{ size_of::<usize>() }..HEADER_LENGTH]
                 .try_into()
                 .map_err(|_| ())?,
         );
@@ -112,7 +112,7 @@ impl<'a, const N: usize> piton::Responder for Responder<'a, N> {
     fn send<'r, 'm, M>(
         self,
         _req_type: u32,
-        msg: piton::TypedBuf<<Self::ServerTransport as ServerTransport>::BufW<'m>, M>,
+        msg: piton::TypedBuf<<Self::ServerTransport as ServiceRx>::BufW<'m>, M>,
     ) -> Result<(), Self::Error>
     where
         M: bytecheck::CheckBytes<()> + 'm,
@@ -129,7 +129,7 @@ pub struct Client<const N: usize> {
     rx: Rx<N>,
 }
 
-impl<const N: usize> piton::ClientTransport for Client<N> {
+impl<const N: usize> piton::ServiceTx for Client<N> {
     type BufW<'r> = BufW<N>;
 
     type BufR<'r> = BufR<N>;
@@ -159,6 +159,58 @@ impl<const N: usize> piton::ClientTransport for Client<N> {
     }
 }
 
+struct BusTx<const N: usize> {
+    tx: Tx<N>,
+}
+
+impl<const N: usize> piton::BusTx for BusTx<N> {
+    type BufW<'r> = BufW<N>;
+
+    type Error = ();
+
+    fn send<'r, 'm, M>(
+        &'r mut self,
+        req_type: u32,
+        mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
+    ) -> Result<(), Self::Error>
+    where
+        M: bytecheck::CheckBytes<()> + 'm,
+    {
+        msg.buf.0[{ size_of::<usize>() }..HEADER_LENGTH].copy_from_slice(&req_type.to_be_bytes());
+        msg.buf.commit::<M>();
+        self.tx.signal.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error> {
+        self.tx.prod.grant(capacity).map_err(|_| ()).map(BufW)
+    }
+}
+
+struct BusRx<const N: usize> {
+    rx: Rx<N>,
+}
+
+impl<const N: usize> piton::BusRx for BusRx<N> {
+    type BufR<'r> = BufR<N>;
+
+    type Error = ();
+
+    fn recv(&mut self) -> Result<Option<piton::Msg<Self::BufR<'_>>>, Self::Error> {
+        let mut buf = self.rx.recv();
+        let msg_type = u32::from_be_bytes(
+            buf[{ size_of::<usize>() }..HEADER_LENGTH]
+                .try_into()
+                .map_err(|_| ())?,
+        );
+        buf.auto_release(true);
+        Ok(Some(piton::Msg {
+            req: BufR(buf),
+            msg_type,
+        }))
+    }
+}
+
 const HEADER_LENGTH: usize = 4 + size_of::<usize>();
 
 pub struct BufW<const N: usize>(bbqueue::framed::FrameGrantW<Storage<N>>);
@@ -180,32 +232,39 @@ macro_rules! impl_buf {
 
             fn as_ref<T: bytecheck::CheckBytes<()>>(&self) -> Option<&T> {
                 unsafe {
-                    T::check_bytes(self.0.as_ptr().add(HEADER_LENGTH) as *mut T, &mut ()).ok()
+                    let ptr = align_up(
+                        self.0.as_ptr().add(HEADER_LENGTH) as *mut u8,
+                        align_of::<T>(),
+                    ) as *mut T;
+                    T::check_bytes(ptr, &mut ()).ok()
                 }
             }
 
             fn as_mut<T: bytecheck::CheckBytes<()>>(&mut self) -> Option<&mut T> {
                 unsafe {
+                    let ptr =
+                        align_up(self.0.as_mut_ptr().add(HEADER_LENGTH), align_of::<T>()) as *mut T;
                     // TODO: check bounds maybe?
-                    let _ = T::check_bytes(self.0.as_mut_ptr() as *mut T, &mut ()).ok()?;
-                    Some(&mut *(self.0.as_mut_ptr().add(HEADER_LENGTH) as *mut T))
+                    let _ = T::check_bytes(ptr, &mut ()).ok()?;
+                    Some(&mut *(ptr))
                 }
             }
 
             // Safety: Assumes there is enough room for the object plus alignment
             unsafe fn as_maybe_uninit<T>(&mut self) -> &mut MaybeUninit<T> {
-                let ptr = self.0.as_ptr().add(HEADER_LENGTH);
-                let addr = ptr as usize;
-                let align_mask = align_of::<T>() - 1;
-                let ptr = if addr & align_mask == 0 {
-                    ptr as *mut MaybeUninit<T>
-                } else {
-                    ((addr | align_mask) + 1) as *mut MaybeUninit<T>
-                };
+                let align = align_of::<T>();
+                let ptr =
+                    align_up(self.0.as_mut_ptr().add(HEADER_LENGTH), align) as *mut MaybeUninit<T>;
                 &mut *ptr
             }
         }
     };
+}
+
+// source: https://github.com/rust-osdev/linked-list-allocator/blob/c2aa6ec6de74cd7f1bee4a7db964ebce3d7574b6/src/lib.rs#L369
+fn align_up(addr: *mut u8, align: usize) -> *mut u8 {
+    let offset = addr.align_offset(align);
+    addr.wrapping_add(offset)
 }
 
 fn spin_wait(signal: &AtomicUsize) {

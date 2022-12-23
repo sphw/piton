@@ -1,9 +1,7 @@
-use std::{
-    marker::PhantomData,
-};
+use std::marker::PhantomData;
 
 use driver::DriverService;
-use piton::{ClientTransport, ServerTransport, };
+use piton::{ServiceRx, ServiceTx};
 use piton_bbq::*;
 
 #[allow(unused_variables)]
@@ -24,7 +22,7 @@ impl<T> Service<T> {
     }
 }
 
-impl<T: ServerTransport> DriverService<T> for Service<T> {
+impl<T: ServiceRx> DriverService<T> for Service<T> {
     fn xyz<'t>(
         &mut self,
         msg: &mut driver::Bar,
@@ -46,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = std::thread::spawn(move || {
         let server = driver::DriverServer {
             transport: server,
-            service: Service::<Server<{4096 * 4}>>::new(),
+            service: Service::<Server<{ 4096 * 4 }>>::new(),
         };
         server.run()
     });

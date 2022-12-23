@@ -1,10 +1,21 @@
 #![no_std]
-use core::{marker::PhantomData, mem::{MaybeUninit, size_of}};
+use core::{
+    marker::PhantomData,
+    mem::{size_of, MaybeUninit},
+};
 
+/// [`Buf`] repersents a buffer owned by a transport. Piton is designed to be used with transports
+/// that allow for DMA and zero-copy. We do that by allowing the transport to allocate a buffer (usually in a ring-buf of some-sort),
+/// that it owns. This trait is shared between readable and writable buffers, but often will have to be implemented seperately for both
+/// ends.
 pub trait Buf {
+    /// Whether or not the buffer can hold type T, this should take into account alignment
     fn can_insert<T>(&self) -> bool;
 
+    /// Check if Buf holds a valid `T`, and returns a reference
     fn as_ref<T: bytecheck::CheckBytes<()>>(&self) -> Option<&T>;
+
+    /// Checks if Buf holds a valid `T`, and returns a mutable reference
     fn as_mut<T: bytecheck::CheckBytes<()>>(&mut self) -> Option<&mut T>;
 
     /// # Safety
@@ -14,7 +25,7 @@ pub trait Buf {
     unsafe fn as_maybe_uninit<T>(&mut self) -> &mut MaybeUninit<T>;
 }
 
-pub trait ClientTransport {
+pub trait ServiceTx {
     type BufW<'r>: Buf + 'r
     where
         Self: 'r;
@@ -35,13 +46,15 @@ pub trait ClientTransport {
         R: bytecheck::CheckBytes<()> + 'r;
 
     fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
-    fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(&mut self) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
+    fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
+        &mut self,
+    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
         let buf = self.alloc(size_of::<T>() + 128)?;
         Ok(TypedBuf::new(buf).unwrap())
     }
 }
 
-pub trait ServerTransport {
+pub trait ServiceRx {
     type Responder<'a>: Responder<Error = Self::Error, ServerTransport = Self> + 'a
     where
         Self: 'a;
@@ -58,6 +71,53 @@ pub trait ServerTransport {
     fn recv(
         &mut self,
     ) -> Result<Option<Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Self::Error>;
+}
+
+pub trait BusTx {
+    type BufW<'r>: Buf + 'r
+    where
+        Self: 'r;
+
+    type Error;
+
+    fn send<'r, 'm, M>(
+        &'r mut self,
+        req_type: u32,
+        msg: TypedBuf<Self::BufW<'m>, M>,
+    ) -> Result<(), Self::Error>
+    where
+        M: bytecheck::CheckBytes<()> + 'm;
+
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
+    fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
+        &mut self,
+    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
+        let buf = self.alloc(size_of::<T>() + 128)?;
+        Ok(TypedBuf::new(buf).unwrap())
+    }
+}
+
+pub trait BusRx {
+    type BufR<'r>: Buf + 'r
+    where
+        Self: 'r;
+
+    type Error;
+
+    #[allow(clippy::type_complexity)]
+    fn recv(&mut self) -> Result<Option<Msg<Self::BufR<'_>>>, Self::Error>;
+}
+
+pub struct Msg<BR> {
+    pub req: BR,
+    pub msg_type: u32,
+}
+
+pub struct Recv<BW, BR, R> {
+    pub req: BR,
+    pub resp: BW,
+    pub responder: R,
+    pub msg_type: u32,
 }
 
 pub struct TypedBuf<B, T> {
@@ -100,21 +160,14 @@ impl<B, T> InsertToken<B, T> {
     }
 }
 
-pub struct Recv<BW, BR, R> {
-    pub req: BR,
-    pub resp: BW,
-    pub responder: R,
-    pub msg_type: u32,
-}
-
 pub trait Responder {
-    type ServerTransport: ServerTransport;
+    type ServerTransport: ServiceRx;
     type Error;
 
     fn send<'r, 'm, M>(
         self,
         req_type: u32,
-        msg: TypedBuf<<Self::ServerTransport as ServerTransport>::BufW<'m>, M>,
+        msg: TypedBuf<<Self::ServerTransport as ServiceRx>::BufW<'m>, M>,
     ) -> Result<(), Self::Error>
     where
         M: bytecheck::CheckBytes<()> + 'm;
