@@ -7,5 +7,5 @@ edition = "2021"
 
 [dependencies]
 piton = { path = "../../lib"}
-bytecheck = { path = "../../../bytecheck/bytecheck", default-features = false }
-bbqueue = { path = "../../../bbqueue/core", features = ["alloc"] }
+bytecheck = { git = "https://github.com/sphw/bytecheck.git", branch = "alloc-feature", default-features = false }
+bbqueue = { git = "https://github.com/sphw/bbqueue.git", branch = "pluggable-storage", features = ["alloc"] }
