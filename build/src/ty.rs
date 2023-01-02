@@ -18,19 +18,19 @@ impl TyChecker {
         self.known_tys.insert(ty_def.name.clone(), expr.clone());
     }
 
-    pub(crate) fn check_expr(&mut self, expr: &Expr) -> miette::Result<()> {
-        let generic_tys = &expr.ty_def().generic_tys;
+    pub(crate) fn resolve_expr(&mut self, expr: &mut Expr) -> miette::Result<()> {
+        let generic_tys = expr.ty_def().generic_tys.clone();
         let tys = expr.field_tys();
-        for (name, ty) in &tys {
-            self.check_ty(ty, generic_tys)
+        for (name, ty) in tys {
+            self.resolve_ty(ty, &generic_tys)
                 .wrap_err(format!("{} error", name))?;
         }
         Ok(())
     }
 
-    fn check_ty(&self, ty: &Ty, generic_tys: &[String]) -> miette::Result<()> {
+    fn resolve_ty(&self, ty: &mut Ty, generic_tys: &[String]) -> miette::Result<()> {
         match ty {
-            Ty::Array { ty, .. } => self.check_ty(ty, generic_tys),
+            Ty::Array { ty, .. } => self.resolve_ty(ty, generic_tys),
             Ty::Unresolved { name, generic_args } => {
                 if generic_tys.iter().any(|t| t == name) {
                     if !generic_args.is_empty() {
@@ -51,8 +51,15 @@ impl TyChecker {
                     ));
                 }
                 for ty in generic_args {
-                    self.check_ty(ty, generic_tys)?;
+                    self.resolve_ty(ty, generic_tys)?;
                 }
+
+                if let Expr::Extern(e) = resolved_ty {
+                    *ty = Ty::Extern {
+                        concrete_impls: e.concrete_impls.clone(),
+                    }
+                }
+
                 Ok(())
             }
             _ => Ok(()),

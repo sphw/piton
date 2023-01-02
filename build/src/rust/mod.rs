@@ -89,6 +89,10 @@ fn ty_to_rust(ty: &Ty) -> String {
         }
         Ty::F32 => "f32".to_string(),
         Ty::F64 => "f64".to_string(),
+        Ty::Extern { concrete_impls } => concrete_impls
+            .get("rust")
+            .expect("extern missing rust") // TODO: replace this with better error handling
+            .clone(),
     }
 }
 

@@ -2,6 +2,7 @@ mod rust;
 mod ty;
 
 use std::{
+    collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
 };
@@ -9,12 +10,13 @@ use std::{
 use miette::IntoDiagnostic;
 use ty::TyChecker;
 
-#[derive(Hash, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub enum Expr {
     Struct(Struct),
     Enum(Enum),
     Service(Service),
     Bus(Bus),
+    Extern(Extern),
 }
 
 impl Expr {
@@ -24,36 +26,38 @@ impl Expr {
             Expr::Enum(e) => &e.ty_def,
             Expr::Bus(b) => &b.ty_def,
             Expr::Service(s) => &s.ty_def,
+            Expr::Extern(e) => &e.ty_def,
         }
     }
 
-    pub(crate) fn field_tys(&self) -> Vec<(String, Ty)> {
+    pub(crate) fn field_tys(&mut self) -> Vec<(String, &mut Ty)> {
         match self {
             Expr::Struct(s) => s
                 .fields
-                .iter()
-                .map(|v| (v.name.clone(), v.ty.clone()))
+                .iter_mut()
+                .map(|v| (v.name.clone(), &mut v.ty))
                 .collect(),
             Expr::Enum(e) => e
                 .variants
-                .iter()
-                .flat_map(|v| Some((v.name.clone(), v.ty.clone()?)))
+                .iter_mut()
+                .flat_map(|v| Some((v.name.clone(), v.ty.as_mut()?)))
                 .collect(),
             Expr::Service(s) => s
                 .methods
-                .iter()
+                .iter_mut()
                 .flat_map(|m| {
                     [
-                        ("arg".to_string(), m.arg_ty.clone()),
-                        ("ret".to_string(), m.return_ty.clone()),
+                        ("arg".to_string(), &mut m.arg_ty),
+                        ("ret".to_string(), &mut m.return_ty),
                     ]
                 })
                 .collect(),
             Expr::Bus(b) => b
                 .msgs
-                .iter()
-                .map(|m| ("arg".to_string(), m.ty.clone()))
+                .iter_mut()
+                .map(|m| ("arg".to_string(), &mut m.ty))
                 .collect(),
+            Expr::Extern(_) => vec![],
         }
     }
 }
@@ -118,12 +122,9 @@ peg::parser! {
             = "(" ty:ty() ")" { ty }
 
         rule service_def() -> Service
-            = "service" _ name:symbol() generic_tys:generic_tys()? _ "{" _ methods:(method() ** ",") _ "}" {
+            = "service" _ ty_def:ty_def() _ "{" _ methods:(method() ** ",") _ "}" {
                 Service {
-                    ty_def: TyDef {
-                        name,
-                        generic_tys: generic_tys.unwrap_or_default()
-                    },
+                    ty_def,
                     methods
                 }
             }
@@ -132,13 +133,18 @@ peg::parser! {
             = "method" _ name:symbol() _ "(" arg_ty:ty() ")" _ "->" _ return_ty:ty() { Method { name, arg_ty, return_ty }}
 
         rule bus_def() -> Bus
-            = "bus" _ name:symbol() generic_tys:generic_tys()? _ "{" _ msgs:(msg() ** ",") _ "}" {
+            = "bus" _ ty_def:ty_def() _ "{" _ msgs:(msg() ** ",") _ "}" {
                 Bus {
-                    ty_def: TyDef {
-                        name,
-                        generic_tys: generic_tys.unwrap_or_default()
-                    },
+                    ty_def,
                     msgs
+                }
+            }
+
+        rule ty_def() -> TyDef
+            = name:symbol() generic_tys:generic_tys()? {
+                TyDef {
+                    name,
+                    generic_tys: generic_tys.unwrap_or_default()
                 }
             }
 
@@ -151,12 +157,33 @@ peg::parser! {
         rule generic_args() -> Vec<Ty>
             = "<" _ args:ty() ** ("," _) ">" { args }
 
+        rule extern_def() -> Extern
+            = "extern" _ ty_def:ty_def() _ "{" _ concrete_impls:(concrete() ** ",")   _  "}" {
+                Extern {
+                    ty_def,
+                    concrete_impls: concrete_impls.into_iter().collect()
+                }
+            }
+
+        rule concrete() -> (String, String)
+            = "concrete" _ lang:symbol() _ "=" _ im:string() { (lang, im) }
+
+        rule string() -> String
+            = "\"" c:character()* "\"" { c.into_iter().collect() }
+
+        rule character() -> char
+            = !("\"" / "\\" ) c:$([_]) {? c.chars().next().ok_or("char err") }
+            / "\\u{" value:$(['0'..='9' | 'a'..='f' | 'A'..='F']+) "}" {? u32::from_str_radix(value, 16).map_err(|_| "invalid unicode point").and_then(|u| std::char::from_u32(u).ok_or("invalid char")) }
+            / "\\x" value:$(['0'..='9' | 'a'..='f' | 'A'..='F']['0'..='9' | 'a'..='f' | 'A'..='F'])  {? u8::from_str_radix(value, 16).map_err(|_| "invalid u8").map(|u| u.into())}
+            / "\\n" { '\n' } / "\\t" { '\t' } / "\\r" { '\r' }
+            / expected!("valid escape sequence")
 
         rule expr() -> Expr
             = s:struct_def() { Expr::Struct(s) }
             / e:enum_def() { Expr::Enum(e) }
             / s:service_def() { Expr::Service(s) }
             / b:bus_def() { Expr::Bus(b) }
+            / e:extern_def() { Expr::Extern(e) }
 
 
         rule _() = quiet!{[' ' | '\n' | '\t']*}
@@ -166,62 +193,68 @@ peg::parser! {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct Extern {
+    ty_def: TyDef,
+    concrete_impls: HashMap<String, String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TyDef {
     name: String,
     generic_tys: Vec<String>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Struct {
     ty_def: TyDef,
     fields: Vec<Field>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Field {
     name: String,
     ty: Ty,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Enum {
     ty_def: TyDef,
     variants: Vec<Variant>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Variant {
     name: String,
     ty: Option<Ty>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Service {
     pub ty_def: TyDef,
     pub methods: Vec<Method>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Method {
     pub name: String,
     pub arg_ty: Ty,
     pub return_ty: Ty,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Bus {
     pub ty_def: TyDef,
     pub msgs: Vec<Msg>,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Msg {
     pub name: String,
     pub ty: Ty,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Ty {
     U64,
     U32,
@@ -234,8 +267,17 @@ pub enum Ty {
     F32,
     F64,
     Bool,
-    Array { ty: Box<Ty>, len: usize },
-    Unresolved { name: String, generic_args: Vec<Ty> },
+    Array {
+        ty: Box<Ty>,
+        len: usize,
+    },
+    Unresolved {
+        name: String,
+        generic_args: Vec<Ty>,
+    },
+    Extern {
+        concrete_impls: HashMap<String, String>,
+    },
 }
 
 pub trait TypeGenerator {
@@ -326,13 +368,13 @@ impl RustBuilder {
     pub fn build(self, path: impl AsRef<Path>) -> miette::Result<()> {
         let path = path.as_ref();
         let doc = std::fs::read_to_string(path).into_diagnostic()?;
-        let exprs = piton_parser::exprs(&doc).into_diagnostic()?;
+        let mut exprs = piton_parser::exprs(&doc).into_diagnostic()?;
         let mut checker = TyChecker::default();
         for expr in &exprs {
             checker.visit_expr(expr);
         }
-        for expr in &exprs {
-            checker.check_expr(expr)?;
+        for expr in &mut exprs {
+            checker.resolve_expr(expr)?;
         }
 
         let mut o = String::default();

@@ -11,7 +11,7 @@ struct Foo {
 }
 
 enum Bar<T> {
-  Test,
+  Test(Vec<T>),
   B(T)
 }
 
@@ -21,4 +21,8 @@ service Driver<D> {
 
 bus TestBus<D> {
   msg foo(Bar<D>)
+}
+
+extern Vec<T> {
+    concrete rust = "piton::Vec<T, 20>"
 }
