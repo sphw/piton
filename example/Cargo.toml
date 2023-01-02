@@ -1,5 +1,5 @@
 [package]
-name = "example"
+name = "piton-example"
 version = "0.1.0"
 edition = "2021"
 
@@ -9,10 +9,7 @@ edition = "2021"
 thiserror = "1"
 piton = { path = "../lib"}
 bytecheck = { path = "../../bytecheck/bytecheck", default-features = false }
-flume = "0.10"
-oneshot = "0.1"
 bbqueue = { path = "../../bbqueue/core", features = ["alloc"] }
-spin = "0.9"
 piton-bbq = { path = "../transports/bbq" }
 
 

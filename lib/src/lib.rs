@@ -25,17 +25,26 @@ pub trait Buf {
     unsafe fn as_maybe_uninit<T>(&mut self) -> &mut MaybeUninit<T>;
 }
 
+/// `ServiceTx` is implemented by the sender side of a service transport. Service transports
+/// have request reply or function call semantics.
+///
+/// Like all transports, the implementor must provide
+/// buffer types that are owned by the transport.
 pub trait ServiceTx {
+    /// A buffer that is issued for writes
     type BufW<'r>: Buf + 'r
     where
         Self: 'r;
 
+    /// A buffer that issued for reads, returned by `call`
     type BufR<'r>: Buf + 'r
     where
         Self: 'r;
 
+    /// A general error type
     type Error;
 
+    /// Calls the service and waits for a reply.
     fn call<'r, 'm, M, R>(
         &'r mut self,
         req_type: u32,
@@ -45,7 +54,10 @@ pub trait ServiceTx {
         M: bytecheck::CheckBytes<()> + 'm,
         R: bytecheck::CheckBytes<()> + 'r;
 
+    /// Allocs a new writable buffer. Generally these buffers are owned by the transport
     fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
+
+    /// Allocs a new writable typed buffer. Generally these buffers are owned by the transport
     fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
         &mut self,
     ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
@@ -54,32 +66,52 @@ pub trait ServiceTx {
     }
 }
 
+/// `ServiceRx` is implemented by the reciever side of a service transport
+///
+/// Like all transports, the implementor must provide
+/// buffer types that are owned by the transport.
 pub trait ServiceRx {
+    /// A [`Responder`] that allow's a user to respond to a recieved message
     type Responder<'a>: Responder<Error = Self::Error, ServerTransport = Self> + 'a
     where
         Self: 'a;
+
+    /// A buffer that issued for reads, returned by `call`
     type BufR<'r>: Buf + 'r
     where
         Self: 'r;
+
+    /// A buffer that is issued for writes
     type BufW<'r>: Buf + 'r
     where
         Self: 'r;
 
+    /// A general error type for teh transport
     type Error;
 
+    /// Polls the transport for any new messages, returning [`Recv`] containg the responder, a write buffer,
+    /// and the new message
     #[allow(clippy::type_complexity)]
     fn recv(
         &mut self,
     ) -> Result<Option<Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Self::Error>;
 }
 
+/// `BusTx` is implemented by the sender side of a service transport. Bus transports
+/// do not have request-reply semantics. They act like a channel, or, as the name would imply, a bus.
+///
+/// Like all transports, the implementor must provide
+/// buffer types that are owned by the transport.
 pub trait BusTx {
+    /// A buffer that is issued for writes
     type BufW<'r>: Buf + 'r
     where
         Self: 'r;
 
+    /// A general error type
     type Error;
 
+    /// Sends a message onto the bus transport
     fn send<'r, 'm, M>(
         &'r mut self,
         req_type: u32,
@@ -88,7 +120,10 @@ pub trait BusTx {
     where
         M: bytecheck::CheckBytes<()> + 'm;
 
+    /// Allocs a new writable buffer. Generally these buffers are owned by the transport
     fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
+
+    /// Allocs a new writable typed buffer. Generally these buffers are owned by the transport
     fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
         &mut self,
     ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
@@ -97,6 +132,10 @@ pub trait BusTx {
     }
 }
 
+/// `BusRx` is implemented by the reciever side of a bus transport
+///
+/// Like all transports, the implementor must provide
+/// buffer types that are owned by the transport.
 pub trait BusRx {
     type BufR<'r>: Buf + 'r
     where
@@ -108,11 +147,13 @@ pub trait BusRx {
     fn recv(&mut self) -> Result<Option<Msg<Self::BufR<'_>>>, Self::Error>;
 }
 
+/// A message received by [`BusRx`]
 pub struct Msg<BR> {
     pub req: BR,
     pub msg_type: u32,
 }
 
+/// A request-reply pair received by [`ServiceRx`]
 pub struct Recv<BW, BR, R> {
     pub req: BR,
     pub resp: BW,
@@ -120,12 +161,16 @@ pub struct Recv<BW, BR, R> {
     pub msg_type: u32,
 }
 
+/// A wrapper around a [`Buf`] that is typed
 pub struct TypedBuf<B, T> {
     pub buf: B,
     _phantom: PhantomData<T>,
 }
 
 impl<T: bytecheck::CheckBytes<()>, B: Buf> TypedBuf<B, T> {
+    /// Creates a new [`TypedBuf`] from a [`Buf`].
+    ///
+    /// This functions returns `None` is `Buf` is not a valid `T`
     pub fn new(buf: B) -> Option<Self> {
         if !buf.can_insert::<T>() {
             return None;
@@ -136,6 +181,7 @@ impl<T: bytecheck::CheckBytes<()>, B: Buf> TypedBuf<B, T> {
         })
     }
 
+    /// Inserts `T` into the typed-buf, and returns a [`InsertToken`]
     pub fn insert(&mut self, obj: T) -> InsertToken<B, T> {
         unsafe {
             self.buf.as_maybe_uninit().write(obj);
@@ -143,15 +189,18 @@ impl<T: bytecheck::CheckBytes<()>, B: Buf> TypedBuf<B, T> {
         }
     }
 
+    /// Returns a reference to type if the buf contains a valid `T`
     pub fn as_ref(&self) -> Option<&T> {
         self.buf.as_ref()
     }
 
+    /// Returns a mutable reference to type if the buf contains a valid `T`
     pub fn as_mut(&mut self) -> Option<&mut T> {
         self.buf.as_mut()
     }
 }
 
+/// A insert token that repersents the result of [`TypedBuf::insert`]. This is used to force a user to write into a buffer before returning from a function
 pub struct InsertToken<B, T>(PhantomData<(B, T)>);
 
 impl<B, T> InsertToken<B, T> {
@@ -160,10 +209,14 @@ impl<B, T> InsertToken<B, T> {
     }
 }
 
+/// `Responder` is implemented by structs that allow a user to respond to a request.
 pub trait Responder {
+    /// The [`ServiceRx`] that this responder is associated with
     type ServerTransport: ServiceRx;
+    /// A general error type
     type Error;
 
+    /// Sends a response
     fn send<'r, 'm, M>(
         self,
         req_type: u32,
