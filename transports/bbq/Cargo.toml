@@ -8,5 +8,4 @@ edition = "2021"
 [dependencies]
 piton = { path = "../../lib"}
 bytecheck = { path = "../../../bytecheck/bytecheck", default-features = false }
-flume = "0.10"
 bbqueue = { path = "../../../bbqueue/core", features = ["alloc"] }
