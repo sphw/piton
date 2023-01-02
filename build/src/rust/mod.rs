@@ -9,10 +9,17 @@ pub struct TypeGenerator;
 
 impl super::TypeGenerator for TypeGenerator {
     fn generate_struct(&self, s: &crate::Struct) -> miette::Result<String> {
+        let generic_args: rust::Tokens = if s.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                <$(for t in &s.ty_def.generic_tys => $(t))>
+            }
+        };
         let tokens: rust::Tokens = quote! {
             #[derive(bytecheck::CheckBytes, Clone, Debug)]
             #[repr(C)]
-            pub struct $(&s.name) {
+            pub struct $(&s.ty_def.name) $(generic_args) {
                 $(for field in &s.fields => pub $(&field.name): $(ty_to_rust(&field.ty)),)
             }
         };
@@ -35,10 +42,17 @@ impl super::TypeGenerator for TypeGenerator {
                 }
             })
             .collect();
+        let generic_args: rust::Tokens = if e.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                <$(for t in &e.ty_def.generic_tys => $(t))>
+            }
+        };
         let tokens: rust::Tokens = quote! {
             #[derive(bytecheck::CheckBytes, Clone, Debug)]
             #[repr(u8)]
-            pub enum $(&e.name) {
+            pub enum $(&e.ty_def.name)$(generic_args) {
                 $(for t in vars => $(t))
             }
         };
@@ -58,9 +72,23 @@ fn ty_to_rust(ty: &Ty) -> String {
         Ty::I8 => "i8".to_string(),
         Ty::Bool => "bool".to_string(),
         Ty::Array { ty, len } => format!("[{}; {}]", ty_to_rust(ty), len),
-        Ty::Unresolved(ty) => ty.to_string(),
-        Ty::F32 => todo!(),
-        Ty::F64 => todo!(),
+        Ty::Unresolved { name, generic_args } => {
+            let args = if generic_args.is_empty() {
+                "".to_string()
+            } else {
+                format!(
+                    "<{}>",
+                    generic_args
+                        .iter()
+                        .map(ty_to_rust)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            };
+            format!("{}{}", name, args)
+        }
+        Ty::F32 => "f32".to_string(),
+        Ty::F64 => "f64".to_string(),
     }
 }
 
@@ -68,9 +96,9 @@ pub struct ServiceGenerator;
 
 impl crate::ServiceGenerator for ServiceGenerator {
     fn generate_service(&self, service: &crate::Service) -> miette::Result<String> {
-        let pascal_name = service.name.to_case(Case::Pascal);
+        let pascal_name = service.ty_def.name.to_case(Case::Pascal);
         let mut hasher = DefaultHasher::default();
-        hasher.write(service.name.as_bytes());
+        hasher.write(service.ty_def.name.as_bytes());
         let addr = hasher.finish() as u32 & 0xFF000000;
         let trait_methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
             quote! {
@@ -93,17 +121,37 @@ impl crate::ServiceGenerator for ServiceGenerator {
             })
             .collect();
 
+        let generic_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                , $(for t in &service.ty_def.generic_tys => $(t))
+            }
+        };
+
+        let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t): bytecheck::CheckBytes<()> + 'static,) };
+
         let tokens: rust::Tokens = quote! {
-            pub trait $(&pascal_name)Service<T: piton::ServiceRx> {
+            pub trait $(&pascal_name)Service<T: piton::ServiceRx, $(&generic_tys)> {
                 $(for method in trait_methods => $(method))
             }
 
-            pub struct $(&pascal_name)Server<T, S> {
-                pub transport: T,
-                pub service: S,
+            pub struct $(&pascal_name)Server<T, S, $(&generic_tys)> {
+                transport: T,
+                service: S,
+                $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): core::marker::PhantomData<$(t)>)
             }
 
-            impl<T: piton::ServiceRx, S: $(&pascal_name)Service<T>> $(pascal_name)Server<T, S> {
+
+            impl<T: piton::ServiceRx, S: $(&pascal_name)Service<T $(&generic_args)>, $(&generic_tys)> $(&pascal_name)Server<T, S $(&generic_args)> {
+                pub fn new(transport: T, service: S) -> Self {
+                    Self {
+                        transport,
+                        service,
+                        $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): Default::default())
+                    }
+                }
+
                 pub fn run(mut self) -> Result<(), T::Error> {
                     use piton::{Responder, Buf};
                     while let Some(mut recv) = self.transport.recv()? {
@@ -127,9 +175,9 @@ pub struct ClientGenerator;
 impl crate::ServiceGenerator for ClientGenerator {
     fn generate_service(&self, service: &crate::Service) -> miette::Result<String> {
         let mut hasher = DefaultHasher::default();
-        hasher.write(service.name.as_bytes());
+        hasher.write(service.ty_def.name.as_bytes());
         let addr = hasher.finish() as u32 & 0xFF000000;
-        let pascal_name = service.name.to_case(Case::Pascal);
+        let pascal_name = service.ty_def.name.to_case(Case::Pascal);
         let methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
             let arg_ty = &method.arg_ty;
             let return_ty = &method.return_ty;
@@ -140,12 +188,29 @@ impl crate::ServiceGenerator for ClientGenerator {
                 }
             }
         }).collect();
+        let generic_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                , $(for t in &service.ty_def.generic_tys => $(t))
+            }
+        };
+        let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t): bytecheck::CheckBytes<()> + 'static,) };
+
         let tokens: rust::Tokens = quote! {
-            pub struct $(&pascal_name)Client<T> {
-                pub transport: T
+            pub struct $(&pascal_name)Client<T, $(&generic_tys)> {
+                pub transport: T,
+                $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): core::marker::PhantomData<$(t)>)
             }
 
-            impl<T: piton::ServiceTx> $(&pascal_name)Client<T> {
+            impl<T: piton::ServiceTx, $(&generic_tys)> $(&pascal_name)Client<T $(&generic_args)> {
+                pub fn new(transport: T) -> Self {
+                    Self {
+                        transport,
+                        $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): Default::default())
+                    }
+                }
+
                 $(for method in methods => $(method))
             }
         };
@@ -156,7 +221,7 @@ impl crate::ServiceGenerator for ClientGenerator {
 pub struct ReqGenerator;
 impl crate::ServiceGenerator for ReqGenerator {
     fn generate_service(&self, service: &crate::Service) -> miette::Result<String> {
-        let pascal_name = service.name.to_case(Case::Pascal);
+        let pascal_name = service.ty_def.name.to_case(Case::Pascal);
         let tokens: rust::Tokens = quote! {
             #[repr(u32)]
             pub enum $(&pascal_name)Req {
@@ -170,7 +235,7 @@ impl crate::ServiceGenerator for ReqGenerator {
 pub struct MsgGenerator;
 impl crate::BusGenerator for MsgGenerator {
     fn generate_bus(&self, bus: &crate::Bus) -> miette::Result<String> {
-        let pascal_name = bus.name.to_case(Case::Pascal);
+        let pascal_name = bus.ty_def.name.to_case(Case::Pascal);
         let tokens: rust::Tokens = quote! {
             #[repr(u32)]
             pub enum $(&pascal_name)Msg {
@@ -186,9 +251,9 @@ pub struct BusTxGenerator;
 impl crate::BusGenerator for BusTxGenerator {
     fn generate_bus(&self, service: &crate::Bus) -> miette::Result<String> {
         let mut hasher = DefaultHasher::default();
-        hasher.write(service.name.as_bytes());
+        hasher.write(service.ty_def.name.as_bytes());
         let addr = hasher.finish() as u32 & 0xFF000000;
-        let pascal_name = service.name.to_case(Case::Pascal);
+        let pascal_name = service.ty_def.name.to_case(Case::Pascal);
         let methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
             let arg_ty = &method.ty;
 
@@ -198,12 +263,31 @@ impl crate::BusGenerator for BusTxGenerator {
                 }
             }
         }).collect();
+
+        let generic_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! { <T> }
+        } else {
+            quote! {
+                <T, $(for t in &service.ty_def.generic_tys => $(t))>
+            }
+        };
+
+        let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t): bytecheck::CheckBytes<()> + 'static,) };
+
         let tokens: rust::Tokens = quote! {
-            pub struct $(&pascal_name)Client<T> {
-                pub transport: T
+            pub struct $(&pascal_name)Client$(&generic_args) {
+                pub transport: T,
+                $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): core::marker::PhantomData<$(t)>)
             }
 
-            impl<T: piton::BusTx> $(&pascal_name)Client<T> {
+            impl<T: piton::BusTx, $(generic_tys)> $(&pascal_name)Client$(&generic_args) {
+                pub fn new(transport: T) -> Self {
+                    Self {
+                        transport,
+                        $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): Default::default())
+                    }
+                }
+
                 $(for method in methods => $(method))
             }
         };
@@ -215,15 +299,25 @@ pub struct BusRxGenerator;
 
 impl crate::BusGenerator for BusRxGenerator {
     fn generate_bus(&self, service: &crate::Bus) -> miette::Result<String> {
-        let pascal_name = service.name.to_case(Case::Pascal);
+        let pascal_name = service.ty_def.name.to_case(Case::Pascal);
         let mut hasher = DefaultHasher::default();
-        hasher.write(service.name.as_bytes());
+        hasher.write(service.ty_def.name.as_bytes());
         let addr = hasher.finish() as u32 & 0xFF000000;
         let trait_methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
             quote! {
                 fn $(method.name.to_case(Case::Snake))(&mut self, msg: &mut $(ty_to_rust(&method.ty))) -> Result<(), T::Error>;
             }
         }).collect();
+
+        let generic_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                ,$(for t in &service.ty_def.generic_tys => $(t))
+            }
+        };
+
+        let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t): bytecheck::CheckBytes<()> + 'static,) };
 
         let match_arms: Vec<rust::Tokens> = service
             .msgs
@@ -239,16 +333,25 @@ impl crate::BusGenerator for BusRxGenerator {
             .collect();
 
         let tokens: rust::Tokens = quote! {
-            pub trait $(&pascal_name)Service<T: piton::BusRx> {
+            pub trait $(&pascal_name)Service<T: piton::BusRx $(&generic_args)> {
                 $(for method in trait_methods => $(method))
             }
 
-            pub struct $(&pascal_name)Server<T, S> {
+            pub struct $(&pascal_name)Server<T, S, $(&generic_tys)> {
                 pub transport: T,
                 pub service: S,
+                $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): core::marker::PhantomData<$(t)>)
             }
 
-            impl<T: piton::BusRx, S: $(&pascal_name)Service<T>> $(pascal_name)Server<T, S> {
+            impl<T: piton::BusRx, S: $(&pascal_name)Service<T $(&generic_args)>, $(&generic_tys)> $(pascal_name)Server<T, S $(&generic_args)> {
+                pub fn new(transport: T, service: S) -> Self {
+                    Self {
+                        transport,
+                        service,
+                        $(for t in &service.ty_def.generic_tys => phantom_$(t.to_case(Case::Lower)): Default::default())
+                    }
+                }
+
                 pub fn run(mut self) -> Result<(), T::Error> {
                     use piton::Buf;
                     while let Some(mut recv) = self.transport.recv()? {

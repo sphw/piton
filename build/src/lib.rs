@@ -1,19 +1,61 @@
 mod rust;
+mod ty;
 
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    str::FromStr,
 };
 
-use knuffel::traits::ErrorSpan;
 use miette::IntoDiagnostic;
+use ty::TyChecker;
 
+#[derive(Hash, Debug, Clone)]
 pub enum Expr {
     Struct(Struct),
     Enum(Enum),
     Service(Service),
     Bus(Bus),
+}
+
+impl Expr {
+    pub(crate) fn ty_def(&self) -> &TyDef {
+        match self {
+            Expr::Struct(s) => &s.ty_def,
+            Expr::Enum(e) => &e.ty_def,
+            Expr::Bus(b) => &b.ty_def,
+            Expr::Service(s) => &s.ty_def,
+        }
+    }
+
+    pub(crate) fn field_tys(&self) -> Vec<(String, Ty)> {
+        match self {
+            Expr::Struct(s) => s
+                .fields
+                .iter()
+                .map(|v| (v.name.clone(), v.ty.clone()))
+                .collect(),
+            Expr::Enum(e) => e
+                .variants
+                .iter()
+                .flat_map(|v| Some((v.name.clone(), v.ty.clone()?)))
+                .collect(),
+            Expr::Service(s) => s
+                .methods
+                .iter()
+                .flat_map(|m| {
+                    [
+                        ("arg".to_string(), m.arg_ty.clone()),
+                        ("ret".to_string(), m.return_ty.clone()),
+                    ]
+                })
+                .collect(),
+            Expr::Bus(b) => b
+                .msgs
+                .iter()
+                .map(|m| ("arg".to_string(), m.ty.clone()))
+                .collect(),
+        }
+    }
 }
 
 peg::parser! {
@@ -31,7 +73,12 @@ peg::parser! {
             / "f64" { Ty::F64 }
             / "bool" { Ty::Bool }
             / "[" _ ty:ty() ";" _ len:uint() _ "]" { Ty::Array { ty: Box::new(ty), len } }
-            / ty:symbol() { Ty::Unresolved(ty) }
+            / name:symbol() generic_args:generic_args()? {
+                Ty::Unresolved {
+                    name,
+                    generic_args: generic_args.unwrap_or_default()
+                }
+            }
 
         rule symbol() -> String
             = s:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { s.into() }
@@ -40,13 +87,29 @@ peg::parser! {
             = n:$(['0'..='9']+) {? n.parse().map_err(|_| "number failed to parse") }
 
         rule struct_def() -> Struct
-            = "struct" _ name:symbol() _ "{" _ fields:(field() ** ("," _)) _ "}" { Struct { name, fields } }
+            = "struct" _ name:symbol() generic_tys:generic_tys()? _ "{" _ fields:(field() ** ("," _)) _ "}" {
+                Struct {
+                    ty_def: TyDef {
+                        name,
+                        generic_tys: generic_tys.unwrap_or_default()
+                    },
+                    fields,
+                }
+            }
 
         rule field() -> Field
             = name:symbol() ":" _ ty:ty() { Field { name , ty }}
 
         rule enum_def() -> Enum
-            = "enum" _ name:symbol() _ "{" _ variants:(variant() ** ("," _)) _ "}" { Enum { name, variants }}
+            = "enum" _ name:symbol() generic_tys:generic_tys()? _ "{" _ variants:(variant() ** ("," _)) _ "}" {
+                Enum {
+                    ty_def: TyDef {
+                        name,
+                        generic_tys: generic_tys.unwrap_or_default()
+                    },
+                    variants,
+                }
+            }
 
         rule variant() -> Variant
             = name:symbol() ty:variant_ty()? { Variant { name, ty } }
@@ -55,16 +118,39 @@ peg::parser! {
             = "(" ty:ty() ")" { ty }
 
         rule service_def() -> Service
-            = "service" _ name:symbol() _ "{" _ methods:(method() ** ",") _ "}" { Service { name, methods }}
+            = "service" _ name:symbol() generic_tys:generic_tys()? _ "{" _ methods:(method() ** ",") _ "}" {
+                Service {
+                    ty_def: TyDef {
+                        name,
+                        generic_tys: generic_tys.unwrap_or_default()
+                    },
+                    methods
+                }
+            }
 
         rule method() -> Method
             = "method" _ name:symbol() _ "(" arg_ty:ty() ")" _ "->" _ return_ty:ty() { Method { name, arg_ty, return_ty }}
 
         rule bus_def() -> Bus
-            = "bus" _ name:symbol() _ "{" _ msgs:(msg() ** ",") _ "}" { Bus { name, msgs  }}
+            = "bus" _ name:symbol() generic_tys:generic_tys()? _ "{" _ msgs:(msg() ** ",") _ "}" {
+                Bus {
+                    ty_def: TyDef {
+                        name,
+                        generic_tys: generic_tys.unwrap_or_default()
+                    },
+                    msgs
+                }
+            }
 
         rule msg() -> Msg
             = "msg" _ name:symbol() "(" ty:ty() ")"  { Msg { name, ty }}
+
+        rule generic_tys() -> Vec<String>
+            = "<" _ args:symbol() ** ("," _) ">" { args }
+
+        rule generic_args() -> Vec<Ty>
+            = "<" _ args:ty() ** ("," _) ">" { args }
+
 
         rule expr() -> Expr
             = s:struct_def() { Expr::Struct(s) }
@@ -80,56 +166,62 @@ peg::parser! {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct Struct {
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct TyDef {
     name: String,
+    generic_tys: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub struct Struct {
+    ty_def: TyDef,
     fields: Vec<Field>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Field {
     name: String,
     ty: Ty,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Enum {
-    name: String,
+    ty_def: TyDef,
     variants: Vec<Variant>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 struct Variant {
     name: String,
     ty: Option<Ty>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Service {
-    pub name: String,
+    pub ty_def: TyDef,
     pub methods: Vec<Method>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Method {
     pub name: String,
     pub arg_ty: Ty,
     pub return_ty: Ty,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Bus {
-    pub name: String,
+    pub ty_def: TyDef,
     pub msgs: Vec<Msg>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub struct Msg {
     pub name: String,
     pub ty: Ty,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum Ty {
     U64,
     U32,
@@ -143,44 +235,7 @@ pub enum Ty {
     F64,
     Bool,
     Array { ty: Box<Ty>, len: usize },
-    Unresolved(String),
-}
-
-impl<S: ErrorSpan> knuffel::DecodeScalar<S> for Ty {
-    fn type_check(
-        type_name: &Option<knuffel::span::Spanned<knuffel::ast::TypeName, S>>,
-        ctx: &mut knuffel::decode::Context<S>,
-    ) {
-        if let Some(typ) = type_name {
-            ctx.emit_error(knuffel::errors::DecodeError::TypeName {
-                span: typ.span().clone(),
-                found: Some((**typ).clone()),
-                expected: knuffel::errors::ExpectedType::no_type(),
-                rust_type: "ty",
-            });
-        }
-    }
-
-    fn raw_decode(
-        val: &knuffel::span::Spanned<knuffel::ast::Literal, S>,
-        _ctx: &mut knuffel::decode::Context<S>,
-    ) -> Result<Self, knuffel::errors::DecodeError<S>> {
-        match &**val {
-            knuffel::ast::Literal::String(ref s) => {
-                s.parse().map_err(
-                    |err: &'static str| knuffel::errors::DecodeError::Unexpected {
-                        span: val.span().clone(),
-                        kind: "array",
-                        message: err.to_string(),
-                    },
-                )
-            }
-            _ => Err(knuffel::errors::DecodeError::scalar_kind(
-                knuffel::decode::Kind::String,
-                val,
-            )),
-        }
-    }
+    Unresolved { name: String, generic_args: Vec<Ty> },
 }
 
 pub trait TypeGenerator {
@@ -245,44 +300,6 @@ pub trait BusGenerator {
     fn generate_bus(&self, service: &Bus) -> miette::Result<String>;
 }
 
-impl FromStr for Ty {
-    type Err = &'static str;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s {
-            "u64" => Ty::U64,
-            "u32" => Ty::U32,
-            "u16" => Ty::U16,
-            "u8" => Ty::U8,
-            "i32" => Ty::I32,
-            "i16" => Ty::I16,
-            "i8" => Ty::I8,
-            "bool" => Ty::Bool,
-            s => {
-                let mut chars = s.chars();
-                if chars.next() == Some('[') {
-                    if chars.last() == Some(']') {
-                        let args = &s[1..s.len() - 1];
-                        let split = args.split(';').collect::<Vec<_>>();
-                        if split.len() != 2 {
-                            return Err("array literal lacks the correct args");
-                        }
-                        let ty = split[0];
-                        let count = split[1].trim();
-                        let ty: Box<Ty> = Box::new(ty.parse()?);
-                        let len: usize = count.parse().map_err(|_| "invalid count param")?;
-                        Ty::Array { ty, len }
-                    } else {
-                        return Err("array literal was started but not finished");
-                    }
-                } else {
-                    Ty::Unresolved(s.into())
-                }
-            }
-        })
-    }
-}
-
 #[derive(Default)]
 pub struct RustBuilder {
     types: bool,
@@ -310,6 +327,14 @@ impl RustBuilder {
         let path = path.as_ref();
         let doc = std::fs::read_to_string(path).into_diagnostic()?;
         let exprs = piton_parser::exprs(&doc).into_diagnostic()?;
+        let mut checker = TyChecker::default();
+        for expr in &exprs {
+            checker.visit_expr(expr);
+        }
+        for expr in &exprs {
+            checker.check_expr(expr)?;
+        }
+
         let mut o = String::default();
         if self.types {
             o += &rust::TypeGenerator.generate(&exprs)?;

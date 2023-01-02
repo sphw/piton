@@ -1,24 +1,24 @@
-struct Test {
+struct Test<T> {
  foo: u16,
- bar: u32,
+ bar: T,
  boolean: bool,
  array: [u8; 20]
 }
 
 struct Foo {
- foo: Test,
- bar: Bar
+ foo: Test<u32>,
+ bar: Bar<u32>
 }
 
-enum Bar {
+enum Bar<T> {
   Test,
-  B(u8)
+  B(T)
 }
 
-service Driver {
-   method xyz(Bar) -> Test
+service Driver<D> {
+   method xyz(Bar<D>) -> Test<D>
 }
 
-bus TestBus {
-  msg foo(Foo)
+bus TestBus<D> {
+  msg foo(Bar<D>)
 }

@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use bytecheck::CheckBytes;
 use driver::DriverService;
 use piton::{ServiceRx, ServiceTx};
 use piton_bbq::*;
@@ -10,28 +11,36 @@ pub mod driver {
 }
 
 #[derive(Default)]
-pub struct Service<T> {
+pub struct Service<T, D> {
     phantom: PhantomData<T>,
+    phantom_d: PhantomData<D>,
 }
 
-impl<T> Service<T> {
+impl<T, D> Service<T, D> {
     pub fn new() -> Self {
         Self {
             phantom: PhantomData,
+            phantom_d: PhantomData,
         }
     }
 }
 
-impl<T: ServiceRx> DriverService<T> for Service<T> {
+impl<T: ServiceRx, D: CheckBytes<()> + Default + Clone + std::fmt::Debug + 'static>
+    DriverService<T, D> for Service<T, D>
+{
     fn xyz<'t>(
         &mut self,
-        msg: &mut driver::Bar,
-        resp: &mut piton::TypedBuf<T::BufW<'t>, driver::Test>,
-    ) -> Result<piton::InsertToken<T::BufW<'t>, driver::Test>, T::Error> {
+        msg: &mut driver::Bar<D>,
+        resp: &mut piton::TypedBuf<T::BufW<'t>, driver::Test<D>>,
+    ) -> Result<piton::InsertToken<T::BufW<'t>, driver::Test<D>>, T::Error> {
         println!("xyz: {:?}", msg);
+        let bar = match msg {
+            driver::Bar::Test => Default::default(),
+            driver::Bar::B(b) => b.clone(),
+        };
         Ok(resp.insert(driver::Test {
             foo: 2,
-            bar: 0xFF,
+            bar,
             boolean: false,
             array: [0; 20],
         }))
@@ -42,14 +51,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut server = Server::default();
     let client = server.client();
     let server = std::thread::spawn(move || {
-        let server = driver::DriverServer {
-            transport: server,
-            service: Service::<Server<{ 4096 * 4 }>>::new(),
-        };
+        let server = driver::DriverServer::new(server, Service::<Server<{ 4096 * 4 }>, u16>::new());
         server.run()
     });
     let client = std::thread::spawn(move || {
-        let mut client = driver::DriverClient { transport: client };
+        let mut client = driver::DriverClient::<_, u16>::new(client);
         loop {
             let mut msg = client.transport.alloc_typed().unwrap();
             msg.insert(driver::Bar::B(0xAB));
