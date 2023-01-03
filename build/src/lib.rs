@@ -1,13 +1,13 @@
 mod rust;
 mod ty;
 
+use miette::{Diagnostic, IntoDiagnostic, NamedSource, SourceSpan};
 use std::{
     collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
 };
-
-use miette::IntoDiagnostic;
+use thiserror::Error;
 use ty::TyChecker;
 
 #[derive(Debug, Clone)]
@@ -201,6 +201,17 @@ peg::parser! {
     }
 }
 
+#[derive(Error, Debug, Diagnostic)]
+#[error("syntax error")]
+#[diagnostic()]
+struct ParseError {
+    #[source_code]
+    src: NamedSource,
+    #[label("{msg}")]
+    source_span: SourceSpan,
+    msg: String,
+}
+
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum GenericTy {
     Ty(String),
@@ -231,7 +242,7 @@ pub struct Extern {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct TyDef {
     name: String,
-    generic_tys: Vec<String>,
+    generic_tys: Vec<GenericTy>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -397,7 +408,17 @@ impl RustBuilder {
     pub fn build(self, path: impl AsRef<Path>) -> miette::Result<()> {
         let path = path.as_ref();
         let doc = std::fs::read_to_string(path).into_diagnostic()?;
-        let mut exprs = piton_parser::exprs(&doc).into_diagnostic()?;
+        let mut exprs = piton_parser::exprs(&doc).map_err(|err| ParseError {
+            src: NamedSource::new(
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .expect("non utf8 filename"),
+                doc,
+            ),
+            source_span: (err.location.offset, 1).into(),
+            msg: format!("expected {}", err.expected),
+        })?;
+
         let mut checker = TyChecker::default();
         for expr in &exprs {
             checker.visit_expr(expr);

@@ -10,3 +10,4 @@ convert_case = "0.5.0"
 miette = { version="4.3.0", features=["fancy"] }
 genco = "0.17"
 peg = "0.7"
+thiserror = "1"
