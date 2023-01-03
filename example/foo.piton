@@ -1,17 +1,17 @@
 struct Test<T> {
  foo: u16,
  bar: T,
- boolean: bool,
+ boolean: bool
  array: [u8; 20]
 }
 
 struct Foo {
  foo: Test<u32>,
- bar: Bar<u32>
+ bar: Vec<u8, 20>
 }
 
 enum Bar<T> {
-  Test(Vec<T>),
+  Test,
   B(T)
 }
 
@@ -23,6 +23,6 @@ bus TestBus<D> {
   msg foo(Bar<D>)
 }
 
-extern Vec<T> {
-    concrete rust = "piton::Vec<T, 20>"
+extern Vec<T, const N: usize> {
+    concrete rust = "piton::Vec<T, N>"
 }

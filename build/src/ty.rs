@@ -1,7 +1,7 @@
 use miette::{miette, WrapErr};
 use std::collections::HashMap;
 
-use crate::{Expr, Ty};
+use crate::{Expr, GenericTy, Ty};
 
 #[derive(Default)]
 pub struct TyChecker {
@@ -28,11 +28,11 @@ impl TyChecker {
         Ok(())
     }
 
-    fn resolve_ty(&self, ty: &mut Ty, generic_tys: &[String]) -> miette::Result<()> {
+    fn resolve_ty(&self, ty: &mut Ty, generic_tys: &[GenericTy]) -> miette::Result<()> {
         match ty {
             Ty::Array { ty, .. } => self.resolve_ty(ty, generic_tys),
             Ty::Unresolved { name, generic_args } => {
-                if generic_tys.iter().any(|t| t == name) {
+                if generic_tys.iter().any(|t| t.name() == name) {
                     if !generic_args.is_empty() {
                         return Err(miette!("can't use generic args in this place"));
                     }
@@ -50,8 +50,13 @@ impl TyChecker {
                         generic_args.len()
                     ));
                 }
-                for ty in generic_args {
-                    self.resolve_ty(ty, generic_tys)?;
+                for arg in generic_args {
+                    match arg {
+                        crate::GenericArg::Ty(ty) => {
+                            self.resolve_ty(ty, generic_tys)?;
+                        }
+                        crate::GenericArg::Const(_) => {}
+                    }
                 }
 
                 if let Expr::Extern(e) = resolved_ty {

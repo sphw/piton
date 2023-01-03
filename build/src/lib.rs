@@ -151,11 +151,19 @@ peg::parser! {
         rule msg() -> Msg
             = "msg" _ name:symbol() "(" ty:ty() ")"  { Msg { name, ty }}
 
-        rule generic_tys() -> Vec<String>
-            = "<" _ args:symbol() ** ("," _) ">" { args }
+        rule generic_ty() -> GenericTy
+            = "const" _ name:symbol() ":" _  ty:ty() { GenericTy::Const { name, ty } }
+            / name:symbol() { GenericTy::Ty(name) }
 
-        rule generic_args() -> Vec<Ty>
-            = "<" _ args:ty() ** ("," _) ">" { args }
+        rule generic_arg() -> GenericArg
+            = ty:ty() { GenericArg::Ty(ty) }
+            / uint:uint() { GenericArg::Const(uint) }
+
+        rule generic_tys() -> Vec<GenericTy>
+            = "<" _ args:generic_ty() ** ("," _) ">" { args }
+
+        rule generic_args() -> Vec<GenericArg>
+            = "<" _ args:generic_arg() ** ("," _) ">" { args }
 
         rule extern_def() -> Extern
             = "extern" _ ty_def:ty_def() _ "{" _ concrete_impls:(concrete() ** ",")   _  "}" {
@@ -191,6 +199,27 @@ peg::parser! {
         pub rule exprs() -> Vec<Expr>
             = exprs:(expr:expr() ** _) _ { exprs }
     }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum GenericTy {
+    Ty(String),
+    Const { ty: Ty, name: String },
+}
+
+impl GenericTy {
+    fn name(&self) -> &str {
+        match self {
+            GenericTy::Ty(name) => name,
+            GenericTy::Const { name, .. } => name,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum GenericArg {
+    Ty(Ty),
+    Const(usize),
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -273,7 +302,7 @@ pub enum Ty {
     },
     Unresolved {
         name: String,
-        generic_args: Vec<Ty>,
+        generic_args: Vec<GenericArg>,
     },
     Extern {
         concrete_impls: HashMap<String, String>,
