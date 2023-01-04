@@ -50,7 +50,7 @@ impl TyChecker {
                         generic_args.len()
                     ));
                 }
-                for arg in generic_args {
+                for arg in generic_args.iter_mut() {
                     match arg {
                         crate::GenericArg::Ty(ty) => {
                             self.resolve_ty(ty, generic_tys)?;
@@ -60,9 +60,29 @@ impl TyChecker {
                 }
 
                 if let Expr::Extern(e) = resolved_ty {
-                    *ty = Ty::Extern {
-                        concrete_impls: e.concrete_impls.clone(),
-                    }
+                    let map = e
+                        .ty_def
+                        .generic_tys
+                        .iter()
+                        .map(|t| t.name())
+                        .zip(generic_args.iter())
+                        .collect::<HashMap<_, _>>();
+                    let Some(template) = e.concrete_impls.get("rust") else {
+                        return Err(miette!("rust impl missing"));
+                    };
+                    let f = template
+                        .iter()
+                        .map(|t| match t {
+                            crate::TemplateToken::Char(c) => c.to_string(),
+                            crate::TemplateToken::Template(t) => {
+                                map.get(t.as_str()).expect("invalid template key").to_rust()
+                            }
+                        })
+                        .collect::<String>();
+                    *ty = Ty::Extern(f);
+                    // *ty = Ty::Extern {
+                    //     concrete_impls: e.concrete_impls.clone(),
+                    // }
                 }
 
                 Ok(())

@@ -61,7 +61,7 @@ impl super::TypeGenerator for TypeGenerator {
 }
 
 impl GenericArg {
-    fn to_rust(&self) -> String {
+    pub fn to_rust(&self) -> String {
         match self {
             GenericArg::Ty(ty) => ty_to_rust(ty),
             GenericArg::Const(ty) => format!("{}", ty),
@@ -70,7 +70,7 @@ impl GenericArg {
 }
 
 impl GenericTy {
-    fn to_rust(&self) -> String {
+    pub fn to_rust(&self) -> String {
         match self {
             GenericTy::Ty(ty) => ty.clone(),
             GenericTy::Const { ty, name } => format!("const {}: {}", name, ty_to_rust(ty)),
@@ -107,10 +107,7 @@ fn ty_to_rust(ty: &Ty) -> String {
         }
         Ty::F32 => "f32".to_string(),
         Ty::F64 => "f64".to_string(),
-        Ty::Extern { concrete_impls } => concrete_impls
-            .get("rust")
-            .expect("extern missing rust") // TODO: replace this with better error handling
-            .clone(),
+        Ty::Extern(e) => e.clone(),
     }
 }
 

@@ -173,11 +173,21 @@ peg::parser! {
                 }
             }
 
-        rule concrete() -> (String, String)
-            = "concrete" _ lang:symbol() _ "=" _ im:string() { (lang, im) }
+        rule concrete() -> (String, Vec<TemplateToken>)
+            = "concrete" _ lang:symbol() _ "=" _ im:template() { (lang, im) }
 
         rule string() -> String
             = "\"" c:character()* "\"" { c.into_iter().collect() }
+
+        rule template_symbol() -> String
+            = "${" _ symbol:symbol() _  "}" { symbol }
+
+        rule template_token() -> TemplateToken
+            = t:template_symbol() { TemplateToken::Template(t) }
+                /  !("${" / "}") c:character()  { TemplateToken::Char(c) }
+
+        rule template() -> Vec<TemplateToken>
+            = "t\"" t:template_token()* "\"" { t.into_iter().collect() }
 
         rule character() -> char
             = !("\"" / "\\" ) c:$([_]) {? c.chars().next().ok_or("char err") }
@@ -213,6 +223,12 @@ struct ParseError {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
+pub enum TemplateToken {
+    Char(char),
+    Template(String),
+}
+
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum GenericTy {
     Ty(String),
     Const { ty: Ty, name: String },
@@ -236,7 +252,7 @@ pub enum GenericArg {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Extern {
     ty_def: TyDef,
-    concrete_impls: HashMap<String, String>,
+    concrete_impls: HashMap<String, Vec<TemplateToken>>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -315,9 +331,7 @@ pub enum Ty {
         name: String,
         generic_args: Vec<GenericArg>,
     },
-    Extern {
-        concrete_impls: HashMap<String, String>,
-    },
+    Extern(String),
 }
 
 pub trait TypeGenerator {
