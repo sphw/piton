@@ -1,4 +1,7 @@
 #![no_std]
+
+pub mod std;
+
 use core::{
     marker::PhantomData,
     mem::{size_of, MaybeUninit},

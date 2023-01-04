@@ -133,7 +133,7 @@ peg::parser! {
             = "method" _ name:symbol() _ "(" arg_ty:ty() ")" _ "->" _ return_ty:ty() { Method { name, arg_ty, return_ty }}
 
         rule bus_def() -> Bus
-            = "bus" _ ty_def:ty_def() _ "{" _ msgs:(msg() ** ",") _ "}" {
+            = "bus" _ ty_def:ty_def() _ "{" _ msgs:(msg() ** (";" _ )) _ "}" {
                 Bus {
                     ty_def,
                     msgs
