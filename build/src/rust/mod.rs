@@ -17,7 +17,7 @@ impl super::TypeGenerator for TypeGenerator {
             }
         };
         let tokens: rust::Tokens = quote! {
-            #[derive(bytecheck::CheckBytes, Clone, Debug, PartialEq)]
+            #[derive(bytecheck::CheckBytes, Clone, Debug, PartialEq, Eq)]
             #[repr(C)]
             pub struct $(&s.ty_def.name) $(generic_args) {
                 $(for field in &s.fields => pub $(&field.name): $(ty_to_rust(&field.ty)),)
@@ -121,7 +121,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
         let addr = hasher.finish() as u32 & 0xFF000000;
         let trait_methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
             quote! {
-                fn $(method.name.to_case(Case::Snake))<'id>(&mut self, msg: &mut $(ty_to_rust(&method.arg_ty)), resp: &mut piton::TypedBuf<T::BufW<'id>, $(ty_to_rust(&method.return_ty))>) -> Result<piton::InsertToken<T::BufW<'id>, $(ty_to_rust(&method.return_ty))>, T::Error>;
+                fn $(method.name.to_case(Case::Snake))<'id>(&mut self, msg: &mut $(ty_to_rust(&method.arg_ty)), resp: &mut piton::TypedBuf<T::BufW<'id>, $(ty_to_rust(&method.return_ty))>) -> Result<piton::InsertToken<T::BufW<'id>, $(ty_to_rust(&method.return_ty))>, piton::Error>;
             }
         }).collect();
 
@@ -132,8 +132,8 @@ impl crate::ServiceGenerator for ServiceGenerator {
             .map(|(i, method)| {
                 quote! {
                     $(i as u32 | addr) => {
-                        let mut resp: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(&method.return_ty)) > = piton::TypedBuf::new(recv.resp).unwrap();
-                        self.service.$(method.name.to_case(Case::Snake))(recv.req.as_mut().unwrap(), &mut resp)?;
+                        let mut resp: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(&method.return_ty)) > = piton::TypedBuf::new(recv.resp).ok_or(piton::Error::InvalidMsg)?;
+                        self.service.$(method.name.to_case(Case::Snake))(recv.req.as_mut().ok_or(piton::Error::InvalidMsg)?, &mut resp)?;
                         recv.responder.send(msg_type, resp)?;
                     }
                 }
@@ -174,7 +174,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
                     }
                 }
 
-                pub fn run(mut self) -> Result<(), T::Error> {
+                pub fn run(mut self) -> Result<(), piton::Error> {
                     use piton::{Responder, Buf};
                     while let Some(mut recv) = self.transport.recv()? {
                         let msg_type = recv.msg_type;
@@ -205,7 +205,7 @@ impl crate::ServiceGenerator for ClientGenerator {
             let return_ty = &method.return_ty;
 
             quote! {
-                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>) -> Result<piton::TypedBuf<T::BufR<'_>, $(ty_to_rust(return_ty))>, T::Error> {
+                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>) -> Result<piton::TypedBuf<T::BufR<'_>, $(ty_to_rust(return_ty))>, piton::Error> {
                     self.transport.call($(&pascal_name)Req::$(method.name.to_case(Case::Pascal)) as u32 | $(addr), msg )
                 }
             }
@@ -284,7 +284,7 @@ impl crate::BusGenerator for BusTxGenerator {
             let arg_ty = &method.ty;
 
             quote! {
-                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>) -> Result<(), T::Error> {
+                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: piton::TypedBuf<T::BufW<'_>, $(ty_to_rust(arg_ty))>) -> Result<(), piton::Error> {
                     self.transport.send($(&pascal_name)Msg::$(method.name.to_case(Case::Pascal)) as u32 | $(addr), msg )
                 }
             }
@@ -334,7 +334,7 @@ impl crate::BusGenerator for BusRxGenerator {
         let addr = hasher.finish() as u32 & 0xFF000000;
         let trait_methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
             quote! {
-                fn $(method.name.to_case(Case::Snake))(&mut self, msg: &mut $(ty_to_rust(&method.ty))) -> Result<(), T::Error>;
+                fn $(method.name.to_case(Case::Snake))(&mut self, msg: &mut $(ty_to_rust(&method.ty))) -> Result<(), piton::Error>;
             }
         }).collect();
 
@@ -355,7 +355,7 @@ impl crate::BusGenerator for BusRxGenerator {
             .map(|(i, method)| {
                 quote! {
                     $(i as u32 | addr) => {
-                        self.service.$(method.name.to_case(Case::Snake))(recv.req.as_mut().unwrap())?;
+                        self.service.$(method.name.to_case(Case::Snake))(recv.req.as_mut().ok_or(piton::Error::InvalidMsg)?)?;
                     }
                 }
             })
@@ -368,7 +368,7 @@ impl crate::BusGenerator for BusRxGenerator {
             .map(|(i, method)| {
                 quote! {
                     $(i as u32 | addr) => {
-                      $(&pascal_name)MsgRx::$(method.name.to_case(Case::Pascal))(piton::TypedBuf::new(recv.req).unwrap())
+                      $(&pascal_name)MsgRx::$(method.name.to_case(Case::Pascal))(piton::TypedBuf::new(recv.req).ok_or(piton::Error::InvalidMsg)?)
                     }
                 }
             })
@@ -397,7 +397,7 @@ impl crate::BusGenerator for BusRxGenerator {
                     }
                 }
 
-                pub fn run(mut self) -> Result<(), T::Error> {
+                pub fn run(mut self) -> Result<(), piton::Error> {
                     use piton::Buf;
                     while let Some(mut recv) = self.transport.recv()? {
                         let msg_type = recv.msg_type;
@@ -429,7 +429,7 @@ impl crate::BusGenerator for BusRxGenerator {
                     }
                 }
 
-                pub fn recv(&mut self) -> Result<$(&pascal_name)MsgRx<T::BufR<'_>, $(&generic_args)>, T::Error> {
+                pub fn recv(&mut self) -> Result<$(&pascal_name)MsgRx<T::BufR<'_>, $(&generic_args)>, piton::Error> {
                     Ok(if let Some(recv) = self.transport.recv()? {
                         let msg_type = recv.msg_type;
                         #[allow(clippy::single_match)]

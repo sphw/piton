@@ -1,5 +1,9 @@
 use miette::{miette, WrapErr};
-use std::collections::HashMap;
+use std::{
+    alloc::Layout,
+    collections::HashMap,
+    mem::{align_of, size_of},
+};
 
 use crate::{Expr, GenericTy, Ty};
 
@@ -91,3 +95,48 @@ impl TyChecker {
         }
     }
 }
+
+// impl Ty {
+//     fn layout(&self) -> Layout {
+//         match self {
+//             Ty::U64 => {
+//                 Layout::from_size_align(size_of::<u64>(), align_of::<u64>()).expect("bad layout")
+//             }
+//             Ty::U32 => {
+//                 Layout::from_size_align(size_of::<u32>(), align_of::<u32>()).expect("bad layout")
+//             }
+//             Ty::U16 => {
+//                 Layout::from_size_align(size_of::<u16>(), align_of::<u16>()).expect("bad layout")
+//             }
+//             Ty::U8 => {
+//                 Layout::from_size_align(size_of::<u8>(), align_of::<u8u>()).expect("bad layout")
+//             }
+//             Ty::I64 => {
+//                 Layout::from_size_align(size_of::<i64>(), align_of::<i64>()).expect("bad layout")
+//             }
+//             Ty::I32 => {
+//                 Layout::from_size_align(size_of::<i32>(), align_of::<i32>()).expect("bad layout")
+//             }
+//             Ty::I16 => {
+//                 Layout::from_size_align(size_of::<i16>(), align_of::<i16>()).expect("bad layout")
+//             }
+//             Ty::I8 => {
+//                 Layout::from_size_align(size_of::<i8>(), align_of::<i8>()).expect("bad layout")
+//             }
+//             Ty::F32 => {
+//                 Layout::from_size_align(size_of::<f32>(), align_of::<f32>()).expect("bad layout")
+//             }
+//             Ty::F64 => {
+//                 Layout::from_size_align(size_of::<f64>(), align_of::<f64>()).expect("bad layout")
+//             }
+//             Ty::Bool => {
+//                 Layout::from_size_align(size_of::<f64>(), align_of::<f64>()).expect("bad layout")
+//             }
+//             Ty::Array { ty, len } => {
+//                 Layout::new() // TODO
+//             }
+//             Ty::Unresolved { name, generic_args } => Layout::new(),
+//             Ty::Extern(_) => Layout::new(),
+//         }
+//     }
+// }

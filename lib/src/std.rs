@@ -1,5 +1,5 @@
 use core::{
-    mem::{self, MaybeUninit},
+    mem::MaybeUninit,
     ops::{Deref, DerefMut},
     ptr::addr_of,
     slice,
@@ -7,10 +7,15 @@ use core::{
 
 use bytecheck::{CheckBytes, StructCheckError};
 
-#[derive(Debug)]
 pub struct Vec<T, const N: usize> {
     len: u64,
     buf: [MaybeUninit<T>; N],
+}
+
+impl<T: core::fmt::Debug, const N: usize> core::fmt::Debug for Vec<T, N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_tuple("Vec").field(&self.as_slice()).finish()
+    }
 }
 
 impl<C, T: CheckBytes<C>, const N: usize> CheckBytes<C> for Vec<T, N> {
@@ -36,6 +41,8 @@ impl<T: PartialEq, const N: usize> PartialEq for Vec<T, N> {
         self.as_slice() == other.as_slice()
     }
 }
+
+impl<T: PartialEq, const N: usize> Eq for Vec<T, N> {}
 
 impl<T, const N: usize> Vec<T, N> {
     const ELEM: MaybeUninit<T> = MaybeUninit::uninit();

@@ -8,7 +8,7 @@ use core::{
 };
 
 use bbqueue::{framed::FrameGrantR, BufStorage};
-use piton::ServiceRx;
+use piton::{Error, ServiceRx};
 
 pub type Storage<const N: usize = { 4094 * 4 }> = Arc<BufStorage<N>>;
 
@@ -73,21 +73,23 @@ impl<const N: usize> ServiceRx for Server<N> {
 
     type BufW<'r> = BufW<N>;
 
-    type Error = ();
-
     fn recv(
         &mut self,
-    ) -> Result<Option<piton::Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Self::Error>
+    ) -> Result<Option<piton::Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Error>
     {
         let mut buf = self.rx.recv();
-        let id = usize::from_be_bytes(buf[..{ size_of::<usize>() }].try_into().map_err(|_| ())?);
+        let id = usize::from_be_bytes(
+            buf[..{ size_of::<usize>() }]
+                .try_into()
+                .map_err(|_| Error::BufferUnderflow)?,
+        );
         let msg_type = u32::from_be_bytes(
             buf[{ size_of::<usize>() }..HEADER_LENGTH]
                 .try_into()
-                .map_err(|_| ())?,
+                .map_err(|_| Error::BufferUnderflow)?,
         );
         let tx = &mut self.tx[id];
-        let resp = BufW(tx.prod.grant(1024).unwrap());
+        let resp = BufW(tx.prod.grant(1024).map_err(|_| Error::BufferUnderflow)?);
         buf.auto_release(true);
         Ok(Some(piton::Recv {
             req: BufR(buf),
@@ -107,13 +109,11 @@ pub struct Responder<'a, const N: usize> {
 impl<'a, const N: usize> piton::Responder for Responder<'a, N> {
     type ServerTransport = Server<N>;
 
-    type Error = ();
-
     fn send<'r, 'm, M>(
         self,
         _req_type: u32,
         msg: piton::TypedBuf<<Self::ServerTransport as ServiceRx>::BufW<'m>, M>,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), Error>
     where
         M: bytecheck::CheckBytes<()> + 'm,
     {
@@ -134,13 +134,11 @@ impl<const N: usize> piton::ServiceTx for Client<N> {
 
     type BufR<'r> = BufR<N>;
 
-    type Error = ();
-
     fn call<'r, 'm, M, R>(
         &'r mut self,
         req_type: u32,
         mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<piton::TypedBuf<Self::BufR<'r>, R>, Self::Error>
+    ) -> Result<piton::TypedBuf<Self::BufR<'r>, R>, Error>
     where
         M: bytecheck::CheckBytes<()> + 'm,
         R: bytecheck::CheckBytes<()> + 'r,
@@ -151,11 +149,15 @@ impl<const N: usize> piton::ServiceTx for Client<N> {
         self.tx.signal.fetch_add(1, Ordering::Release);
         let mut resp = self.rx.recv();
         resp.auto_release(true);
-        Ok(piton::TypedBuf::new(BufR(resp)).unwrap())
+        piton::TypedBuf::new(BufR(resp)).ok_or(Error::InvalidMsg)
     }
 
-    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error> {
-        self.tx.prod.grant(capacity).map_err(|_| ()).map(BufW)
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error> {
+        self.tx
+            .prod
+            .grant(capacity)
+            .map_err(|_| Error::BufferOverflow)
+            .map(BufW)
     }
 }
 
@@ -166,13 +168,11 @@ struct BusTx<const N: usize> {
 impl<const N: usize> piton::BusTx for BusTx<N> {
     type BufW<'r> = BufW<N>;
 
-    type Error = ();
-
     fn send<'r, 'm, M>(
         &'r mut self,
         req_type: u32,
         mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), Error>
     where
         M: bytecheck::CheckBytes<()> + 'm,
     {
@@ -182,8 +182,12 @@ impl<const N: usize> piton::BusTx for BusTx<N> {
         Ok(())
     }
 
-    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error> {
-        self.tx.prod.grant(capacity).map_err(|_| ()).map(BufW)
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error> {
+        self.tx
+            .prod
+            .grant(capacity)
+            .map_err(|_| Error::BufferOverflow)
+            .map(BufW)
     }
 }
 
@@ -194,14 +198,12 @@ struct BusRx<const N: usize> {
 impl<const N: usize> piton::BusRx for BusRx<N> {
     type BufR<'r> = BufR<N>;
 
-    type Error = ();
-
-    fn recv(&mut self) -> Result<Option<piton::Msg<Self::BufR<'_>>>, Self::Error> {
+    fn recv(&mut self) -> Result<Option<piton::Msg<Self::BufR<'_>>>, Error> {
         let mut buf = self.rx.recv();
         let msg_type = u32::from_be_bytes(
             buf[{ size_of::<usize>() }..HEADER_LENGTH]
                 .try_into()
-                .map_err(|_| ())?,
+                .map_err(|_| Error::BufferUnderflow)?,
         );
         buf.auto_release(true);
         Ok(Some(piton::Msg {
@@ -231,6 +233,7 @@ macro_rules! impl_buf {
             }
 
             fn as_ref<T: bytecheck::CheckBytes<()>>(&self) -> Option<&T> {
+                // TODO: fix safety here
                 unsafe {
                     let ptr = align_up(
                         self.0.as_ptr().add(HEADER_LENGTH) as *mut u8,
