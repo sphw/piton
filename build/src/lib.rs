@@ -1,14 +1,14 @@
 mod rust;
 mod ty;
 
-use miette::{Diagnostic, IntoDiagnostic, NamedSource, SourceSpan};
+use miette::{Context, Diagnostic, IntoDiagnostic, NamedSource, SourceSpan};
 use std::{
     collections::HashMap,
     env, fs,
     path::{Path, PathBuf},
 };
 use thiserror::Error;
-use ty::TyChecker;
+use ty::{LayoutChecker, TyChecker};
 
 #[derive(Debug, Clone)]
 pub enum Expr {
@@ -440,6 +440,25 @@ impl RustBuilder {
         for expr in &mut exprs {
             checker.resolve_expr(expr)?;
         }
+        for expr in &mut exprs {
+            let mut checker = LayoutChecker::default();
+            if let Expr::Struct(ref mut s) = expr {
+                let name = s.ty_def.name.clone();
+                println!("struct {name}");
+                for field in &s.fields {
+                    checker
+                        .next_field(field.ty.layout())
+                        .wrap_err(format!("{name}, {}", field.name))?;
+                }
+                let final_pad = checker.final_pad();
+                if final_pad > 0 {
+                    s.fields.push(Field {
+                        name: "_pad".to_string(),
+                        ty: Ty::Extern(format!("piton::ZeroPad<{}>", final_pad)),
+                    })
+                }
+            }
+        }
 
         let mut o = String::default();
         if self.types {
@@ -465,5 +484,16 @@ impl RustBuilder {
             .ok_or_else(|| miette::miette!("invalid file stem"))?;
         fs::write(out.join(format!("{}.rs", file_stem)), o).into_diagnostic()?;
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct ZeroPad<const N: usize> {
+    _pad: [u8; N],
+}
+
+impl<const N: usize> Default for ZeroPad<N> {
+    fn default() -> Self {
+        Self { _pad: [0; N] }
     }
 }

@@ -17,7 +17,7 @@ impl super::TypeGenerator for TypeGenerator {
             }
         };
         let tokens: rust::Tokens = quote! {
-            #[derive(bytecheck::CheckBytes, Clone, Debug, PartialEq, Eq)]
+            #[derive(bytecheck::CheckBytes, Clone, Debug, PartialEq, Eq, Default)]
             #[repr(C)]
             pub struct $(&s.ty_def.name) $(generic_args) {
                 $(for field in &s.fields => pub $(&field.name): $(ty_to_rust(&field.ty)),)

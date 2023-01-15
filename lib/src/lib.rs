@@ -239,3 +239,20 @@ impl core::fmt::Display for Error {
 
 #[cfg(feature = "std")]
 impl ::std::error::Error for Error {}
+
+#[derive(Clone, bytecheck::CheckBytes, PartialEq, Eq, Hash)]
+pub struct ZeroPad<const N: usize> {
+    _pad: [u8; N],
+}
+
+impl<const N: usize> core::fmt::Debug for ZeroPad<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ZeroPad").finish()
+    }
+}
+
+impl<const N: usize> Default for ZeroPad<N> {
+    fn default() -> Self {
+        Self { _pad: [0; N] }
+    }
+}

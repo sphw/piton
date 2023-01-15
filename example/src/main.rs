@@ -43,6 +43,7 @@ impl<T: ServiceRx, D: CheckBytes<()> + Default + Clone + std::fmt::Debug + 'stat
             bar,
             boolean: false,
             array: [0; 20],
+            ..Default::default()
         }))
     }
 }

@@ -1,8 +1,9 @@
 struct Test<T> {
- foo: u16,
  bar: T,
  boolean: bool,
- array: [u8; 20]
+ boolean2: bool,
+ array: [u8; 20],
+ foo: u16
 }
 
 struct Foo {

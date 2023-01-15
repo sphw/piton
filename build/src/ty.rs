@@ -1,9 +1,5 @@
-use miette::{miette, WrapErr};
-use std::{
-    alloc::Layout,
-    collections::HashMap,
-    mem::{align_of, size_of},
-};
+use miette::{miette, IntoDiagnostic, WrapErr};
+use std::{alloc::Layout, collections::HashMap};
 
 use crate::{Expr, GenericTy, Ty};
 
@@ -84,9 +80,6 @@ impl TyChecker {
                         })
                         .collect::<String>();
                     *ty = Ty::Extern(f);
-                    // *ty = Ty::Extern {
-                    //     concrete_impls: e.concrete_impls.clone(),
-                    // }
                 }
 
                 Ok(())
@@ -96,47 +89,56 @@ impl TyChecker {
     }
 }
 
-// impl Ty {
-//     fn layout(&self) -> Layout {
-//         match self {
-//             Ty::U64 => {
-//                 Layout::from_size_align(size_of::<u64>(), align_of::<u64>()).expect("bad layout")
-//             }
-//             Ty::U32 => {
-//                 Layout::from_size_align(size_of::<u32>(), align_of::<u32>()).expect("bad layout")
-//             }
-//             Ty::U16 => {
-//                 Layout::from_size_align(size_of::<u16>(), align_of::<u16>()).expect("bad layout")
-//             }
-//             Ty::U8 => {
-//                 Layout::from_size_align(size_of::<u8>(), align_of::<u8u>()).expect("bad layout")
-//             }
-//             Ty::I64 => {
-//                 Layout::from_size_align(size_of::<i64>(), align_of::<i64>()).expect("bad layout")
-//             }
-//             Ty::I32 => {
-//                 Layout::from_size_align(size_of::<i32>(), align_of::<i32>()).expect("bad layout")
-//             }
-//             Ty::I16 => {
-//                 Layout::from_size_align(size_of::<i16>(), align_of::<i16>()).expect("bad layout")
-//             }
-//             Ty::I8 => {
-//                 Layout::from_size_align(size_of::<i8>(), align_of::<i8>()).expect("bad layout")
-//             }
-//             Ty::F32 => {
-//                 Layout::from_size_align(size_of::<f32>(), align_of::<f32>()).expect("bad layout")
-//             }
-//             Ty::F64 => {
-//                 Layout::from_size_align(size_of::<f64>(), align_of::<f64>()).expect("bad layout")
-//             }
-//             Ty::Bool => {
-//                 Layout::from_size_align(size_of::<f64>(), align_of::<f64>()).expect("bad layout")
-//             }
-//             Ty::Array { ty, len } => {
-//                 Layout::new() // TODO
-//             }
-//             Ty::Unresolved { name, generic_args } => Layout::new(),
-//             Ty::Extern(_) => Layout::new(),
-//         }
-//     }
-// }
+pub struct LayoutChecker {
+    layout: Layout,
+}
+
+impl Default for LayoutChecker {
+    fn default() -> Self {
+        Self {
+            layout: Layout::from_size_align(0, 1).expect("bad layout"),
+        }
+    }
+}
+
+impl LayoutChecker {
+    pub fn next_field(&mut self, layout: Layout) -> miette::Result<()> {
+        let last_offset = self.layout.size();
+        let (new_layout, offset) = self.layout.extend(layout).into_diagnostic()?;
+        if offset > last_offset {
+            return Err(miette!(
+                "types must have no internal padding required, try reordering your values: pad amount {}", offset - last_offset
+            ));
+        }
+        self.layout = new_layout;
+        Ok(())
+    }
+
+    pub fn final_pad(&self) -> usize {
+        let align = 8;
+        let len = self.layout.size();
+        let len_rounded_up = len.wrapping_add(align).wrapping_sub(1) & !align.wrapping_sub(1);
+        len_rounded_up.wrapping_sub(len)
+    }
+}
+
+impl Ty {
+    pub fn layout(&self) -> Layout {
+        match self {
+            Ty::U64 => Layout::new::<u64>(),
+            Ty::U32 => Layout::new::<u32>(),
+            Ty::U16 => Layout::new::<u16>(),
+            Ty::U8 => Layout::new::<u16>(),
+            Ty::I64 => Layout::new::<i64>(),
+            Ty::I32 => Layout::new::<i32>(),
+            Ty::I16 => Layout::new::<i16>(),
+            Ty::I8 => Layout::new::<i16>(),
+            Ty::F64 => Layout::new::<f64>(),
+            Ty::F32 => Layout::new::<f32>(),
+            Ty::Bool => Layout::new::<bool>(),
+            Ty::Array { ty, .. } => ty.layout(),
+            Ty::Unresolved { .. } => Layout::from_size_align(8, 8).expect("bad layout"),
+            Ty::Extern(_) => Layout::from_size_align(8, 8).expect("bad layout"),
+        }
+    }
+}
