@@ -3,5 +3,6 @@ members = [
   "lib",
   "build",
   "example",
-  "transports/bbq"
+  "transports/bbq",
+  "transports/multiqueue"
 ]

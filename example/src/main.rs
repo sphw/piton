@@ -32,7 +32,7 @@ impl<T: ServiceRx, D: CheckBytes<()> + Default + Clone + std::fmt::Debug + 'stat
         &mut self,
         msg: &mut driver::Bar<D>,
         resp: &mut piton::TypedBuf<T::BufW<'t>, driver::Test<D>>,
-    ) -> Result<piton::InsertToken<T::BufW<'t>, driver::Test<D>>, T::Error> {
+    ) -> Result<piton::InsertToken<T::BufW<'t>, driver::Test<D>>, piton::Error> {
         println!("xyz: {:?}", msg);
         let bar = match msg {
             driver::Bar::Test => Default::default(),
@@ -43,6 +43,7 @@ impl<T: ServiceRx, D: CheckBytes<()> + Default + Clone + std::fmt::Debug + 'stat
             bar,
             boolean: false,
             array: [0; 20],
+            ..Default::default()
         }))
     }
 }

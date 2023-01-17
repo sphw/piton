@@ -1,4 +1,7 @@
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
+
+pub mod std;
+
 use core::{
     marker::PhantomData,
     mem::{size_of, MaybeUninit},
@@ -41,26 +44,23 @@ pub trait ServiceTx {
     where
         Self: 'r;
 
-    /// A general error type
-    type Error;
-
     /// Calls the service and waits for a reply.
     fn call<'r, 'm, M, R>(
         &'r mut self,
         req_type: u32,
         msg: TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<TypedBuf<Self::BufR<'r>, R>, Self::Error>
+    ) -> Result<TypedBuf<Self::BufR<'r>, R>, Error>
     where
         M: bytecheck::CheckBytes<()> + 'm,
         R: bytecheck::CheckBytes<()> + 'r;
 
     /// Allocs a new writable buffer. Generally these buffers are owned by the transport
-    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error>;
 
     /// Allocs a new writable typed buffer. Generally these buffers are owned by the transport
     fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
         &mut self,
-    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
+    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Error> {
         let buf = self.alloc(size_of::<T>() + 128)?;
         Ok(TypedBuf::new(buf).unwrap())
     }
@@ -72,7 +72,7 @@ pub trait ServiceTx {
 /// buffer types that are owned by the transport.
 pub trait ServiceRx {
     /// A [`Responder`] that allow's a user to respond to a recieved message
-    type Responder<'a>: Responder<Error = Self::Error, ServerTransport = Self> + 'a
+    type Responder<'a>: Responder<ServerTransport = Self> + 'a
     where
         Self: 'a;
 
@@ -86,15 +86,12 @@ pub trait ServiceRx {
     where
         Self: 'r;
 
-    /// A general error type for teh transport
-    type Error;
-
     /// Polls the transport for any new messages, returning [`Recv`] containg the responder, a write buffer,
     /// and the new message
     #[allow(clippy::type_complexity)]
     fn recv(
         &mut self,
-    ) -> Result<Option<Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Self::Error>;
+    ) -> Result<Option<Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Error>;
 }
 
 /// `BusTx` is implemented by the sender side of a service transport. Bus transports
@@ -108,25 +105,22 @@ pub trait BusTx {
     where
         Self: 'r;
 
-    /// A general error type
-    type Error;
-
     /// Sends a message onto the bus transport
     fn send<'r, 'm, M>(
         &'r mut self,
         req_type: u32,
         msg: TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), Error>
     where
         M: bytecheck::CheckBytes<()> + 'm;
 
     /// Allocs a new writable buffer. Generally these buffers are owned by the transport
-    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Self::Error>;
+    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error>;
 
     /// Allocs a new writable typed buffer. Generally these buffers are owned by the transport
     fn alloc_typed<'r, T: bytecheck::CheckBytes<()>>(
         &mut self,
-    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Self::Error> {
+    ) -> Result<TypedBuf<Self::BufW<'r>, T>, Error> {
         let buf = self.alloc(size_of::<T>() + 128)?;
         Ok(TypedBuf::new(buf).unwrap())
     }
@@ -141,10 +135,8 @@ pub trait BusRx {
     where
         Self: 'r;
 
-    type Error;
-
     #[allow(clippy::type_complexity)]
-    fn recv(&mut self) -> Result<Option<Msg<Self::BufR<'_>>>, Self::Error>;
+    fn recv(&mut self) -> Result<Option<Msg<Self::BufR<'_>>>, Error>;
 }
 
 /// A message received by [`BusRx`]
@@ -213,15 +205,54 @@ impl<B, T> InsertToken<B, T> {
 pub trait Responder {
     /// The [`ServiceRx`] that this responder is associated with
     type ServerTransport: ServiceRx;
-    /// A general error type
-    type Error;
 
     /// Sends a response
     fn send<'r, 'm, M>(
         self,
         req_type: u32,
         msg: TypedBuf<<Self::ServerTransport as ServiceRx>::BufW<'m>, M>,
-    ) -> Result<(), Self::Error>
+    ) -> Result<(), Error>
     where
         M: bytecheck::CheckBytes<()> + 'm;
+}
+
+#[derive(Debug)]
+pub enum Error {
+    BufferUnderflow,
+    BufferOverflow,
+    InvalidMsg,
+    TxFail,
+    RxFail,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Error::BufferUnderflow => write!(f, "buffer underflow"),
+            Error::BufferOverflow => write!(f, "buffer overflow"),
+            Error::InvalidMsg => write!(f, "invalid msg"),
+            Error::TxFail => write!(f, "tx fail"),
+            Error::RxFail => write!(f, "rx fail"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl ::std::error::Error for Error {}
+
+#[derive(Clone, bytecheck::CheckBytes, PartialEq, Eq, Hash)]
+pub struct ZeroPad<const N: usize> {
+    _pad: [u8; N],
+}
+
+impl<const N: usize> core::fmt::Debug for ZeroPad<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("ZeroPad").finish()
+    }
+}
+
+impl<const N: usize> Default for ZeroPad<N> {
+    fn default() -> Self {
+        Self { _pad: [0; N] }
+    }
 }

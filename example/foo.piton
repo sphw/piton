@@ -1,13 +1,14 @@
 struct Test<T> {
- foo: u16,
  bar: T,
  boolean: bool,
- array: [u8; 20]
+ boolean2: bool,
+ array: [u8; 20],
+ foo: u16
 }
 
 struct Foo {
  foo: Test<u32>,
- bar: Bar<u32>
+ bar: Vec<u8, 20>
 }
 
 enum Bar<T> {
@@ -21,4 +22,8 @@ service Driver<D> {
 
 bus TestBus<D> {
   msg foo(Bar<D>)
+}
+
+extern Vec<T, const N: usize> {
+    concrete rust = t"piton::std::Vec<${T}, ${N}>"
 }
