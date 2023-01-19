@@ -30,7 +30,7 @@ impl<T: Yule> piton::BusTx for BusTx<T> {
     type Msg = T;
     type BufW<'r> = Buf<T>;
 
-    fn send<'r, 'm>(&'r mut self, msg: Self::BufW<'m>) -> Result<(), Error> {
+    fn send(&'_ mut self, msg: Self::BufW<'_>) -> Result<(), Error> {
         self.tx.try_send(msg).map_err(|e| {
             println!("{:?}", e);
             Error::TxFail

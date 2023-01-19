@@ -80,9 +80,9 @@ impl<const N: usize, Arg: Yule, Ret: Yule> ServiceRx for Server<N, Arg, Ret> {
 
     type BufW<'r> = BufW<N, Self::Ret>;
 
-    fn recv<'r>(
-        &'r mut self,
-    ) -> Result<Option<piton::Recv<Self::BufW<'r>, Self::BufR<'r>, Self::Responder<'r>>>, Error>
+    fn recv(
+        &mut self,
+    ) -> Result<Option<piton::Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Error>
     {
         let mut buf = self.rx.recv();
         let id = usize::from_be_bytes(
@@ -119,10 +119,7 @@ pub struct Responder<'a, const N: usize, Arg, Ret> {
 impl<'a, const N: usize, Arg: Yule, Ret: Yule> piton::Responder for Responder<'a, N, Arg, Ret> {
     type ServerTransport = Server<N, Arg, Ret>;
 
-    fn send<'r, 'm>(
-        self,
-        msg: <Self::ServerTransport as ServiceRx>::BufW<'m>,
-    ) -> Result<(), Error> {
+    fn send(self, msg: <Self::ServerTransport as ServiceRx>::BufW<'_>) -> Result<(), Error> {
         msg.commit();
         self.signal.fetch_add(1, Ordering::Release);
         Ok(())

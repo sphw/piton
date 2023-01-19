@@ -516,7 +516,7 @@ impl crate::BusGenerator for BusTxGenerator {
 
                     impl<'a, S: piton::BusTx<Msg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> $(&method_pascal)SendRef<'a, S, $(&generic_args)> {
                         pub fn send(self) -> Result<(), piton::Error> {
-                            let msg = self.transport.send(self.msg)?;
+                            self.transport.send(self.msg)?;
                             Ok(())
                         }
                     }

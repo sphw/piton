@@ -3,7 +3,7 @@
 pub mod std;
 
 use core::{
-    mem::size_of,
+    mem::{align_of, size_of},
     ops::{Deref, DerefMut},
 };
 
@@ -19,14 +19,9 @@ pub unsafe trait Yule:
     bytecheck::CheckBytes<()> + Sized + Default + Clone + 'static
 {
     fn validate(slice: &[u8]) -> bool {
-        if slice.len() < size_of::<Self>() {
-            panic!("{} < {}", slice.len(), size_of::<Self>())
-        }
-        // TODO: check align
-        unsafe {
-            Self::check_bytes(slice.as_ptr() as *const Self, &mut ()).unwrap();
-        }
-        true
+        slice.len() >= size_of::<Self>()
+            && slice.as_ptr().align_offset(align_of::<Self>()) == 0
+            && unsafe { Self::check_bytes(slice.as_ptr() as *const Self, &mut ()).is_ok() }
     }
 
     fn from_mut_slice(slice: &mut [u8]) -> Option<&mut Self> {
@@ -151,9 +146,9 @@ pub trait ServiceRx {
     /// Polls the transport for any new messages, returning [`Recv`] containg the responder, a write buffer,
     /// and the new message
     #[allow(clippy::type_complexity)]
-    fn recv<'r>(
-        &'r mut self,
-    ) -> Result<Option<Recv<Self::BufW<'r>, Self::BufR<'r>, Self::Responder<'r>>>, Error>;
+    fn recv(
+        &mut self,
+    ) -> Result<Option<Recv<Self::BufW<'_>, Self::BufR<'_>, Self::Responder<'_>>>, Error>;
 }
 
 /// `BusTx` is implemented by the sender side of a service transport. Bus transports
@@ -169,7 +164,7 @@ pub trait BusTx {
         Self: 'r;
 
     /// Sends a message onto the bus transport
-    fn send<'r, 'm>(&'r mut self, msg: Self::BufW<'m>) -> Result<(), Error>;
+    fn send(&'_ mut self, msg: Self::BufW<'_>) -> Result<(), Error>;
 
     /// Allocs a new writable buffer. Generally these buffers are owned by the transport
     fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error>;
@@ -250,7 +245,7 @@ pub trait Responder {
     type ServerTransport: ServiceRx;
 
     /// Sends a response
-    fn send<'m>(self, msg: <Self::ServerTransport as ServiceRx>::BufW<'m>) -> Result<(), Error>;
+    fn send(self, msg: <Self::ServerTransport as ServiceRx>::BufW<'_>) -> Result<(), Error>;
 }
 
 #[derive(Debug)]
