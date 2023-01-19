@@ -15,7 +15,9 @@ use core::{
 /// # Safety
 /// By implementing Yule you are guarenteeing that your type has no padding and can safetly be zeroed. If either of those things
 /// are untrue, you are doing a UB.
-pub unsafe trait Yule: bytecheck::CheckBytes<()> + Sized + Default + 'static {
+pub unsafe trait Yule:
+    bytecheck::CheckBytes<()> + Sized + Default + Clone + 'static
+{
     fn validate(slice: &[u8]) -> bool {
         if slice.len() < size_of::<Self>() {
             panic!("{} < {}", slice.len(), size_of::<Self>())
@@ -103,26 +105,24 @@ where
 /// Like all transports, the implementor must provide
 /// buffer types that are owned by the transport.
 pub trait ServiceTx {
+    type Arg: Yule;
+    type Ret: Yule;
+
     /// A buffer that is issued for writes
-    type BufW<'r, T>: BufW<'r, T> + 'r
+    type BufW<'r>: BufW<'r, Self::Arg> + 'r
     where
-        T: Yule + 'r,
         Self: 'r;
 
     /// A buffer that issued for reads, returned by `call`
-    type BufR<'r, T>: BufR<'r, T> + 'r
+    type BufR<'r>: BufR<'r, Self::Ret> + 'r
     where
-        Self: 'r,
-        T: Yule + 'r;
+        Self: 'r;
 
     /// Calls the service and waits for a reply.
-    fn call<'r, 'm, M, R>(&'r mut self, msg: Self::BufW<'m, M>) -> Result<Self::BufR<'r, R>, Error>
-    where
-        M: Yule + 'm,
-        R: Yule + 'r;
+    fn call<'r, 'm>(&'r mut self, msg: Self::BufW<'m>) -> Result<Self::BufR<'r>, Error>;
 
     /// Allocs a new writable buffer. Generally these buffers are owned by the transport
-    fn alloc<'r, T: Yule + 'r>(&mut self) -> Result<Self::BufW<'r, T>, Error>;
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error>;
 }
 
 /// `ServiceRx` is implemented by the reciever side of a service transport
@@ -130,32 +130,30 @@ pub trait ServiceTx {
 /// Like all transports, the implementor must provide
 /// buffer types that are owned by the transport.
 pub trait ServiceRx {
+    type Arg: Yule;
+    type Ret: Yule;
+
     /// A [`Responder`] that allow's a user to respond to a recieved message
     type Responder<'a>: Responder<ServerTransport = Self> + 'a
     where
         Self: 'a;
 
     /// A buffer that issued for reads, returned by `call`
-    type BufR<'r, T>: BufR<'r, T> + 'r
+    type BufR<'r>: BufR<'r, Self::Arg> + 'r
     where
-        Self: 'r,
-        T: Yule + 'r;
+        Self: 'r;
 
     /// A buffer that is issued for writes
-    type BufW<'r, R>: BufW<'r, R> + 'r
+    type BufW<'r>: BufW<'r, Self::Ret> + 'r
     where
-        Self: 'r,
-        R: Yule + 'r;
+        Self: 'r;
 
     /// Polls the transport for any new messages, returning [`Recv`] containg the responder, a write buffer,
     /// and the new message
     #[allow(clippy::type_complexity)]
-    fn recv<'r, A, R>(
+    fn recv<'r>(
         &'r mut self,
-    ) -> Result<Option<Recv<Self::BufW<'r, A>, Self::BufR<'r, R>, Self::Responder<'r>>>, Error>
-    where
-        A: Yule + 'r,
-        R: Yule + 'r;
+    ) -> Result<Option<Recv<Self::BufW<'r>, Self::BufR<'r>, Self::Responder<'r>>>, Error>;
 }
 
 /// `BusTx` is implemented by the sender side of a service transport. Bus transports
@@ -164,19 +162,17 @@ pub trait ServiceRx {
 /// Like all transports, the implementor must provide
 /// buffer types that are owned by the transport.
 pub trait BusTx {
+    type Msg: Yule;
     /// A buffer that is issued for writes
-    type BufW<'r, T>: BufW<'r, T> + 'r
+    type BufW<'r>: BufW<'r, Self::Msg> + 'r
     where
-        Self: 'r,
-        T: Yule + 'r;
+        Self: 'r;
 
     /// Sends a message onto the bus transport
-    fn send<'r, 'm, M>(&'r mut self, msg: Self::BufW<'m, M>) -> Result<(), Error>
-    where
-        M: Yule + 'm;
+    fn send<'r, 'm>(&'r mut self, msg: Self::BufW<'m>) -> Result<(), Error>;
 
     /// Allocs a new writable buffer. Generally these buffers are owned by the transport
-    fn alloc<'r, T: Yule>(&mut self, capacity: usize) -> Result<Self::BufW<'r, T>, Error>;
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error>;
 }
 
 /// `BusRx` is implemented by the reciever side of a bus transport
@@ -184,13 +180,13 @@ pub trait BusTx {
 /// Like all transports, the implementor must provide
 /// buffer types that are owned by the transport.
 pub trait BusRx {
-    type BufR<'r, T>: BufR<'r, T> + 'r
+    type Msg: Yule;
+    type BufR<'r>: BufR<'r, Self::Msg> + 'r
     where
-        Self: 'r,
-        T: Yule;
+        Self: 'r;
 
     #[allow(clippy::type_complexity)]
-    fn recv<T: Yule>(&mut self) -> Result<Option<Self::BufR<'_, T>>, Error>;
+    fn recv(&mut self) -> Result<Option<Self::BufR<'_>>, Error>;
 }
 
 /// A request-reply pair received by [`ServiceRx`]
@@ -254,12 +250,7 @@ pub trait Responder {
     type ServerTransport: ServiceRx;
 
     /// Sends a response
-    fn send<'m, M>(
-        self,
-        msg: <Self::ServerTransport as ServiceRx>::BufW<'m, M>,
-    ) -> Result<(), Error>
-    where
-        M: Yule + 'm;
+    fn send<'m>(self, msg: <Self::ServerTransport as ServiceRx>::BufW<'m>) -> Result<(), Error>;
 }
 
 #[derive(Debug)]

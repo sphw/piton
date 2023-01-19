@@ -3,6 +3,7 @@ use std::{collections::hash_map::DefaultHasher, hash::Hasher};
 use crate::{GenericArg, GenericTy, Ty};
 use convert_case::{Case, Casing};
 use genco::prelude::*;
+use miette::miette;
 use miette::IntoDiagnostic;
 
 pub struct TypeGenerator;
@@ -183,6 +184,14 @@ impl crate::ServiceGenerator for ServiceGenerator {
 
         let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t.to_rust()): piton::Yule + 'static,) };
 
+        let generic_enum_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                <$(for t in &service.ty_def.generic_tys => $(t.to_rust()))>
+            }
+        };
+
         let tokens: rust::Tokens = quote! {
             pub trait $(&pascal_name)Service<T: piton::ServiceRx, $(&generic_tys)> {
                 $(for method in trait_methods => $(method))
@@ -195,7 +204,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
             }
 
 
-            impl<T: piton::ServiceRx, S: $(&pascal_name)Service<T, $(&generic_args)>, $(&generic_tys)> $(&pascal_name)Server<T, S, $(&generic_args)> {
+            impl<T: piton::ServiceRx<Arg = $(&pascal_name)Req$(&generic_enum_args), Ret = $(&pascal_name)Ret$(&generic_enum_args)>, S: $(&pascal_name)Service<T, $(&generic_args)>, $(&generic_tys)> $(&pascal_name)Server<T, S, $(&generic_args)> {
                 pub fn new(transport: T, service: S) -> Self {
                     Self {
                         transport,
@@ -206,7 +215,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
 
                 pub fn run(mut self) -> Result<(), piton::Error> {
                     use piton::Responder;
-                    while let Some(mut recv) = self.transport.recv::<$(&pascal_name)Ret<$(&generic_args)>, $(&pascal_name)Req<$(&generic_args)>>()? {
+                    while let Some(mut recv) = self.transport.recv()? {
                         use piton::BufR;
                         #[allow(clippy::single_match, unreachable_patterns)]
                         match recv.req.as_ref() {
@@ -245,6 +254,14 @@ impl crate::ServiceGenerator for ClientGenerator {
             }
         };
 
+        let generic_phantom_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {()}
+        } else {
+            quote! {
+                ($(for t in &service.ty_def.generic_tys => $(t.to_rust())))
+            }
+        };
+
         let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t.to_rust()): piton::Yule  + 'static,) };
 
         let methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
@@ -255,6 +272,7 @@ impl crate::ServiceGenerator for ClientGenerator {
                     Ok($(method_pascal)CallRef {
                         msg: self.transport.alloc()?,
                         transport: &mut self.transport,
+                        _phantom: core::marker::PhantomData,
                     })
                 }
             }
@@ -273,17 +291,19 @@ impl crate::ServiceGenerator for ClientGenerator {
                 quote! {
                     pub struct $(&method_pascal)CallRef<'a, Serv: piton::ServiceTx + 'a, $(&generic_tys)> {
                         transport: &'a mut Serv,
-                        msg: <Serv as piton::ServiceTx>::BufW<'a, $(&pascal_name)Req$(&generic_enum_args)>,
+                        msg: <Serv as piton::ServiceTx>::BufW<'a>,
+                        #[allow(unused_parens)]
+                        _phantom: core::marker::PhantomData<$(&generic_phantom_args)>
                     }
 
                     impl<'a, S: piton::ServiceTx + 'a, $(&generic_tys)> $(&method_pascal)CallRef<'a, S, $(&generic_args)> {
                         pub fn call(self) -> Result<$(&method_pascal)RetRef<'a, S, $(&generic_args)>, piton::Error> {
                             let msg = self.transport.call(self.msg)?;
-                            Ok($(&method_pascal)RetRef { msg })
+                            Ok($(&method_pascal)RetRef { msg, _phantom: core::marker::PhantomData })
                         }
                     }
 
-                    impl<'a, S: piton::ServiceTx + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)CallRef<'a, S, $(&generic_args)> {
+                    impl<'a, S: piton::ServiceTx<Arg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)CallRef<'a, S, $(&generic_args)> {
                         type Target = $(ty_to_rust(arg_ty));
 
                         fn deref(&self) -> &Self::Target {
@@ -294,7 +314,7 @@ impl crate::ServiceGenerator for ClientGenerator {
                         }
                     }
 
-                    impl<'a, S: piton::ServiceTx + 'a, $(&generic_tys)> core::ops::DerefMut for $(&method_pascal)CallRef<'a, S, $(&generic_args)> {
+                    impl<'a, S: piton::ServiceTx<Arg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::DerefMut for $(&method_pascal)CallRef<'a, S, $(&generic_args)> {
                         fn deref_mut(&mut self) -> &mut Self::Target {
                             #[allow(irrefutable_let_patterns)]
                             if let $(req_enum)::$(&method_pascal)(v) = self.msg.deref_mut() {
@@ -304,10 +324,12 @@ impl crate::ServiceGenerator for ClientGenerator {
                     }
 
                     pub struct $(&method_pascal)RetRef<'a, Serv: piton::ServiceTx + 'a, $(&generic_tys)> {
-                        msg: <Serv as piton::ServiceTx>::BufR<'a, $(&pascal_name)Ret$(&generic_enum_args)>,
+                        msg: <Serv as piton::ServiceTx>::BufR<'a>,
+                        #[allow(unused_parens)]
+                        _phantom: core::marker::PhantomData<$(&generic_phantom_args)>
                     }
 
-                    impl<'a, S: piton::ServiceTx + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)RetRef<'a, S, $(&generic_args)> {
+                    impl<'a, S: piton::ServiceTx<Ret = $(&ret_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)RetRef<'a, S, $(&generic_args)> {
                         type Target = $(ty_to_rust(return_ty));
 
                         fn deref(&self) -> &Self::Target {
@@ -360,27 +382,31 @@ impl crate::ServiceGenerator for ReqGenerator {
             }
         };
         let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t.to_rust())) };
+        let first_method = service
+            .methods
+            .first()
+            .ok_or_else(|| miette!("service must have atleast one method"))?;
 
         let tokens: rust::Tokens = quote! {
-            #[derive(bytecheck::CheckBytes)]
+            #[derive(bytecheck::CheckBytes, Clone)]
             #[repr(u32)]
             pub enum $(&pascal_name)Req$(&generic_args) {
                 $(for method in service.methods.iter() => $(method.name.to_case(Case::Pascal))($(ty_to_rust(&method.arg_ty))),)
             }
             impl$(&generic_args) core::default::Default for $(&pascal_name)Req<$(&generic_tys)> {
-                fn default() -> Self { todo!() }
+                fn default() -> Self { Self::$(first_method.name.to_case(Case::Pascal))(Default::default()) }
             }
 
             unsafe impl$(&generic_args) piton::Yule for $(&pascal_name)Req<$(&generic_tys)> {}
 
-            #[derive(bytecheck::CheckBytes)]
+            #[derive(bytecheck::CheckBytes, Clone)]
             #[repr(u32)]
             pub enum $(&pascal_name)Ret$(&generic_args) {
                 $(for method in service.methods.iter() => $(method.name.to_case(Case::Pascal))($(ty_to_rust(&method.return_ty))),)
             }
 
             impl$(&generic_args) core::default::Default for $(&pascal_name)Ret<$(&generic_tys)> {
-                fn default() -> Self { todo!() }
+                fn default() -> Self { Self::$(first_method.name.to_case(Case::Pascal))(Default::default()) }
             }
 
             unsafe impl$(&generic_args) piton::Yule for $(&pascal_name)Ret<$(&generic_tys)> {}
@@ -402,15 +428,20 @@ impl crate::BusGenerator for MsgGenerator {
         };
         let generic_tys = quote! { $(for t in &bus.ty_def.generic_tys => $(t.to_rust()),) };
 
+        let first_msg = bus
+            .msgs
+            .first()
+            .ok_or_else(|| miette!("service must have atleast one method"))?;
+
         let tokens: rust::Tokens = quote! {
-            #[derive(bytecheck::CheckBytes)]
+            #[derive(bytecheck::CheckBytes, Clone)]
             #[repr(u32)]
             pub enum $(&pascal_name)Msg$(&generic_args){
                 $(for method in bus.msgs.iter() => $(method.name.to_case(Case::Pascal))($(ty_to_rust(&method.ty))),)
             }
 
             impl$(&generic_args) core::default::Default for $(&pascal_name)Msg<$(&generic_tys)> {
-                fn default() -> Self { todo!() }
+                fn default() -> Self { Self::$(first_msg.name.to_case(Case::Pascal))(Default::default()) }
             }
 
             unsafe impl$(generic_args) piton::Yule for $(&pascal_name)Msg<$(&generic_tys)> {}
@@ -426,36 +457,105 @@ impl crate::BusGenerator for BusTxGenerator {
         let mut hasher = DefaultHasher::default();
         hasher.write(service.ty_def.name.as_bytes());
         let pascal_name = service.ty_def.name.to_case(Case::Pascal);
-        let methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
-            let arg_ty = &method.ty;
-
-            quote! {
-                pub fn $(method.name.to_case(Case::Snake))(&mut self, msg: T::BufW<'_, $(ty_to_rust(arg_ty))>) -> Result<(), piton::Error> {
-                    self.transport.send(msg)
-                }
-            }
-        }).collect();
 
         let generic_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
-            quote! { <T> }
+            quote! {}
         } else {
             quote! {
-                <T, $(for t in &service.ty_def.generic_tys => $(t.to_rust()))>
+                $(for t in &service.ty_def.generic_tys => $(t.to_rust()))
             }
         };
 
         let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t.to_rust()): piton::Yule + 'static,) };
 
+        let generic_enum_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                <$(for t in &service.ty_def.generic_tys => $(t.to_rust()))>
+            }
+        };
+
+        let generic_phantom_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {()}
+        } else {
+            quote! {
+                ($(for t in &service.ty_def.generic_tys => $(t.to_rust())))
+            }
+        };
+
+        let methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
+            let method_pascal = method.name.to_case(Case::Pascal);
+
+            quote! {
+                pub fn $(method.name.to_case(Case::Snake))_ref(&mut self) -> Result<$(&method_pascal)SendRef<'_, T, $(&generic_args)>, piton::Error> {
+                    Ok($(method_pascal)SendRef {
+                        msg: self.transport.alloc()?,
+                        transport: &mut self.transport,
+                        _phantom: core::marker::PhantomData,
+                    })
+                }
+            }
+        }).collect();
+
+        let method_structs: Vec<rust::Tokens> = service
+            .msgs
+            .iter()
+            .map(|method| {
+                let arg_ty = &method.ty;
+                let method_pascal = method.name.to_case(Case::Pascal);
+                let req_enum = quote! { $(&pascal_name)Msg };
+
+                quote! {
+                    pub struct $(&method_pascal)SendRef<'a, Serv: piton::BusTx + 'a, $(&generic_tys)> {
+                        transport: &'a mut Serv,
+                        msg: <Serv as piton::BusTx>::BufW<'a>,
+                        #[allow(unused_parens)]
+                        _phantom: core::marker::PhantomData<$(&generic_phantom_args)>
+                    }
+
+                    impl<'a, S: piton::BusTx<Msg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> $(&method_pascal)SendRef<'a, S, $(&generic_args)> {
+                        pub fn send(self) -> Result<(), piton::Error> {
+                            let msg = self.transport.send(self.msg)?;
+                            Ok(())
+                        }
+                    }
+
+                    impl<'a, S: piton::BusTx<Msg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)SendRef<'a, S, $(&generic_args)> {
+                        type Target = $(ty_to_rust(arg_ty));
+
+                        fn deref(&self) -> &Self::Target {
+                            #[allow(irrefutable_let_patterns)]
+                            if let $(&req_enum)::$(&method_pascal)(v) = self.msg.deref() {
+                                v
+                            }else { unreachable!() }
+                        }
+                    }
+
+                    impl<'a, S: piton::BusTx<Msg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::DerefMut for $(&method_pascal)SendRef<'a, S, $(&generic_args)> {
+                        fn deref_mut(&mut self) -> &mut Self::Target {
+                            #[allow(irrefutable_let_patterns)]
+                            if let $(req_enum)::$(&method_pascal)(v) = self.msg.deref_mut() {
+                                v
+                            }else { unreachable!() }
+                        }
+                    }
+                }
+            }).collect();
+
         let phantom_tys = phantom_tys(&service.ty_def.generic_tys);
         let phantom_new = phantom_new(&service.ty_def.generic_tys);
 
         let tokens: rust::Tokens = quote! {
-            pub struct $(&pascal_name)Client$(&generic_args) {
+
+            $(for method in method_structs => $(method))
+
+            pub struct $(&pascal_name)Client<T, $(&generic_args)> {
                 pub transport: T,
                 $(phantom_tys)
             }
 
-            impl<T: piton::BusTx, $(generic_tys)> $(&pascal_name)Client$(&generic_args) {
+            impl<T: piton::BusTx<Msg = $(&pascal_name)Msg$(generic_enum_args)>, $(generic_tys)> $(&pascal_name)Client<T, $(&generic_args)> {
                 pub fn new(transport: T) -> Self {
                     Self {
                         transport,
@@ -493,6 +593,14 @@ impl crate::BusGenerator for BusRxGenerator {
 
         let generic_tys = quote! { $(for t in &service.ty_def.generic_tys => $(t.to_rust()): piton::Yule + 'static,) };
 
+        let generic_enum_args: rust::Tokens = if service.ty_def.generic_tys.is_empty() {
+            quote! {}
+        } else {
+            quote! {
+                <$(for t in &service.ty_def.generic_tys => $(t.to_rust()))>
+            }
+        };
+
         let match_arms: Vec<rust::Tokens> = service
             .msgs
             .iter()
@@ -507,6 +615,7 @@ impl crate::BusGenerator for BusRxGenerator {
 
         let phantom_tys = phantom_tys(&service.ty_def.generic_tys);
         let phantom_new = phantom_new(&service.ty_def.generic_tys);
+        let req_enum = quote! { $(&pascal_name)Msg };
 
         let tokens: rust::Tokens = quote! {
             pub trait $(&pascal_name)Service<T: piton::BusRx, $(&generic_args)> {
@@ -519,7 +628,7 @@ impl crate::BusGenerator for BusRxGenerator {
                 $(phantom_tys.clone())
             }
 
-            impl<T: piton::BusRx, S: $(&pascal_name)Service<T, $(&generic_args)>, $(&generic_tys)> $(&pascal_name)Server<T, S, $(&generic_args)> {
+            impl<T: piton::BusRx<Msg = $(&req_enum)$(&generic_enum_args)>, S: $(&pascal_name)Service<T, $(&generic_args)>, $(&generic_tys)> $(&pascal_name)Server<T, S, $(&generic_args)> {
                 pub fn new(transport: T, service: S) -> Self {
                     Self {
                         transport,
@@ -529,7 +638,7 @@ impl crate::BusGenerator for BusRxGenerator {
                 }
 
                 pub fn run(mut self) -> Result<(), piton::Error> {
-                    while let Some(recv) = self.transport.recv::<$(&pascal_name)Msg<$(&generic_args)>>()? {
+                    while let Some(recv) = self.transport.recv()? {
                         use piton::BufR;
                         #[allow(clippy::single_match, unreachable_patterns)]
                         match recv.as_ref() {
@@ -548,7 +657,7 @@ impl crate::BusGenerator for BusRxGenerator {
             }
 
 
-            impl<T: piton::BusRx, $(&generic_tys)> $(&pascal_name)Rx<T, $(&generic_args)> {
+            impl<T: piton::BusRx<Msg = $(&pascal_name)Msg<$(&generic_args)>>, $(&generic_tys)> $(&pascal_name)Rx<T, $(&generic_args)> {
                 pub fn new(transport: T) -> Self {
                     Self {
                         transport,
@@ -556,8 +665,8 @@ impl crate::BusGenerator for BusRxGenerator {
                     }
                 }
 
-                pub fn recv(&mut self) -> Result<Option<T::BufR<'_, $(&pascal_name)Msg<$(&generic_args)>>>, piton::Error> {
-                     self.transport.recv::<$(&pascal_name)Msg<$(&generic_args)>>()
+                pub fn recv(&mut self) -> Result<Option<T::BufR<'_>>, piton::Error> {
+                     self.transport.recv()
                 }
             }
         };

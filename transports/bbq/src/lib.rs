@@ -23,13 +23,14 @@ pub struct Rx<const N: usize> {
     cons: bbqueue::framed::FrameConsumer<Storage<N>>,
 }
 
-pub struct Server<const N: usize> {
+pub struct Server<const N: usize, Arg, Ret> {
     queue: bbqueue::BBBuffer<Storage<N>>,
     rx: Rx<N>,
     tx: Vec<Tx<N>>,
+    _phantom: PhantomData<(Arg, Ret)>,
 }
 
-impl<const N: usize> Default for Server<N> {
+impl<const N: usize, Arg, Ret> Default for Server<N, Arg, Ret> {
     fn default() -> Self {
         let queue = bbqueue::BBBuffer::new(Arc::new(BufStorage::new()));
         let cons = queue.frame_consumer().expect("consumer already created");
@@ -40,12 +41,13 @@ impl<const N: usize> Default for Server<N> {
                 signal: Arc::new(AtomicUsize::new(0)),
             },
             tx: vec![],
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<const N: usize> Server<N> {
-    pub fn client(&mut self) -> Client<N> {
+impl<const N: usize, Arg: Yule, Ret: Yule> Server<N, Arg, Ret> {
+    pub fn client(&mut self) -> Client<N, Arg, Ret> {
         let reply = bbqueue::BBBuffer::new(Arc::new(BufStorage::new()));
         let id = self.tx.len();
         let signal = Arc::new(AtomicUsize::new(0));
@@ -63,23 +65,24 @@ impl<const N: usize> Server<N> {
                 signal,
             },
             id,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<const N: usize> ServiceRx for Server<N> {
-    type Responder<'a> = Responder<'a, N>;
+impl<const N: usize, Arg: Yule, Ret: Yule> ServiceRx for Server<N, Arg, Ret> {
+    type Arg = Arg;
+    type Ret = Ret;
 
-    type BufR<'r, T> = BufR<N, T> where T: Yule + 'r;
+    type Responder<'a> = Responder<'a, N, Arg, Ret>;
 
-    type BufW<'r, T> = BufW<N, T> where T: Yule + 'r;
+    type BufR<'r> = BufR<N, Self::Arg>;
 
-    fn recv<'r, A, R>(
+    type BufW<'r> = BufW<N, Self::Ret>;
+
+    fn recv<'r>(
         &'r mut self,
-    ) -> Result<Option<piton::Recv<Self::BufW<'r, A>, Self::BufR<'r, R>, Self::Responder<'r>>>, Error>
-    where
-        A: Yule + 'r,
-        R: Yule + 'r,
+    ) -> Result<Option<piton::Recv<Self::BufW<'r>, Self::BufR<'r>, Self::Responder<'r>>>, Error>
     {
         let mut buf = self.rx.recv();
         let id = usize::from_be_bytes(
@@ -91,7 +94,7 @@ impl<const N: usize> ServiceRx for Server<N> {
         let mut resp = BufW {
             grant: tx
                 .prod
-                .grant(size_of::<A>() + HEADER_LENGTH + align_of::<A>())
+                .grant(size_of::<Ret>() + HEADER_LENGTH + align_of::<Ret>())
                 .map_err(|_| Error::BufferUnderflow)?,
             _phantom: Default::default(),
         };
@@ -102,50 +105,46 @@ impl<const N: usize> ServiceRx for Server<N> {
             resp,
             responder: Responder {
                 signal: tx.signal.as_ref(),
+                _phantom: PhantomData,
             },
         }))
     }
 }
 
-pub struct Responder<'a, const N: usize> {
+pub struct Responder<'a, const N: usize, Arg, Ret> {
     signal: &'a AtomicUsize,
+    _phantom: PhantomData<(Arg, Ret)>,
 }
 
-impl<'a, const N: usize> piton::Responder for Responder<'a, N> {
-    type ServerTransport = Server<N>;
+impl<'a, const N: usize, Arg: Yule, Ret: Yule> piton::Responder for Responder<'a, N, Arg, Ret> {
+    type ServerTransport = Server<N, Arg, Ret>;
 
-    fn send<'r, 'm, M>(
+    fn send<'r, 'm>(
         self,
-        msg: <Self::ServerTransport as ServiceRx>::BufW<'m, M>,
-    ) -> Result<(), Error>
-    where
-        M: Yule + 'm,
-    {
+        msg: <Self::ServerTransport as ServiceRx>::BufW<'m>,
+    ) -> Result<(), Error> {
         msg.commit();
         self.signal.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }
 
-pub struct Client<const N: usize> {
+pub struct Client<const N: usize, Arg, Ret> {
     id: usize,
     tx: Tx<N>,
     rx: Rx<N>,
+    _phantom: PhantomData<(Arg, Ret)>,
 }
 
-impl<const N: usize> piton::ServiceTx for Client<N> {
-    type BufW<'r, T> = BufW<N, T> where T: piton::Yule + 'r;
+impl<const N: usize, Arg: Yule, Ret: Yule> piton::ServiceTx for Client<N, Arg, Ret> {
+    type Arg = Arg;
+    type Ret = Ret;
 
-    type BufR<'r, T> = BufR<N, T> where T: piton::Yule + 'r;
+    type BufW<'r> = BufW<N, Arg>;
 
-    fn call<'r, 'm, M, R>(
-        &'r mut self,
-        mut msg: Self::BufW<'m, M>,
-    ) -> Result<Self::BufR<'r, R>, Error>
-    where
-        M: Yule + 'm,
-        R: Yule + 'r,
-    {
+    type BufR<'r> = BufR<N, Ret>;
+
+    fn call<'r, 'm>(&'r mut self, mut msg: Self::BufW<'m>) -> Result<Self::BufR<'r>, Error> {
         msg.grant[0..{ size_of::<usize>() }].copy_from_slice(&self.id.to_be_bytes());
         msg.commit();
         self.tx.signal.fetch_add(1, Ordering::Release);
@@ -154,10 +153,10 @@ impl<const N: usize> piton::ServiceTx for Client<N> {
         BufR::new(resp)
     }
 
-    fn alloc<'r, T: Yule + 'r>(&mut self) -> Result<Self::BufW<'r, T>, Error> {
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error> {
         self.tx
             .prod
-            .grant(size_of::<T>() + HEADER_LENGTH + align_of::<T>())
+            .grant(size_of::<Arg>() + HEADER_LENGTH + align_of::<Arg>())
             .map_err(|_| Error::BufferOverflow)
             .map(|g| unsafe { BufW::new(g) })
     }

@@ -47,7 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = server.client();
     let server = std::thread::spawn(move || {
         let server =
-            driver::DriverServer::new(server, Service::<Server<{ 4096 * 16 }>, u16>::new());
+            driver::DriverServer::new(server, Service::<Server<{ 4096 * 16 }, _, _>, u16>::new());
         server.run()
     });
     let client = std::thread::spawn(move || {
