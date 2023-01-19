@@ -1,136 +1,96 @@
 use std::{
-    alloc::Layout,
-    mem::{align_of, size_of, MaybeUninit},
+    marker::PhantomData,
+    ops::{Deref, DerefMut},
 };
 
 use multiqueue::{BroadcastReceiver, BroadcastSender};
-use piton::{Buf, Error, Msg};
+use piton::{BufR, BufW, Error, Yule};
 
-pub fn pair(capacity: u64) -> (BusTx, BusRx) {
+pub fn pair<Msg: Yule>(capacity: u64) -> (BusTx<Msg>, BusRx<Msg>) {
     let (tx, rx) = multiqueue::broadcast_queue(capacity);
-    (BusTx { tx }, BusRx { rx })
+    (
+        BusTx {
+            tx,
+            _phantom: PhantomData,
+        },
+        BusRx {
+            rx,
+            _phantom: PhantomData,
+        },
+    )
 }
 
 #[derive(Clone)]
-pub struct BusTx {
-    tx: BroadcastSender<BufW>,
+pub struct BusTx<Msg: Yule> {
+    tx: BroadcastSender<Buf<Msg>>,
+    _phantom: PhantomData<Msg>,
 }
 
-impl piton::BusTx for BusTx {
-    type BufW<'r> = BufW;
+impl<T: Yule> piton::BusTx for BusTx<T> {
+    type Msg = T;
+    type BufW<'r> = Buf<T>;
 
-    fn send<'r, 'm, M>(
-        &'r mut self,
-        req_type: u32,
-        mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<(), Error>
-    where
-        M: bytecheck::CheckBytes<()> + 'm,
-    {
-        if let Some(ref mut inner) = msg.buf.inner {
-            inner[{ size_of::<usize>() }..HEADER_LENGTH].copy_from_slice(&req_type.to_be_bytes());
-        }
-        self.tx.try_send(msg.buf).map_err(|e| {
+    fn send(&'_ mut self, msg: Self::BufW<'_>) -> Result<(), Error> {
+        self.tx.try_send(msg).map_err(|e| {
             println!("{:?}", e);
             Error::TxFail
         })
     }
 
-    fn alloc<'r>(&mut self, _capacity: usize) -> Result<Self::BufW<'r>, Error> {
-        Ok(BufW { inner: None })
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error> {
+        Ok(Buf(T::default()))
     }
 }
 
-pub struct BusRx {
-    rx: BroadcastReceiver<BufW>,
+pub struct BusRx<Msg: Yule> {
+    rx: BroadcastReceiver<Buf<Msg>>,
+    _phantom: PhantomData<Msg>,
 }
 
-impl Clone for BusRx {
+impl<Msg: Yule> Clone for BusRx<Msg> {
     fn clone(&self) -> Self {
         Self {
             rx: self.rx.add_stream(),
+            _phantom: PhantomData,
         }
     }
 }
 
-impl piton::BusRx for BusRx {
-    type BufR<'r> = BufW;
+impl<Msg: Yule> piton::BusRx for BusRx<Msg> {
+    type Msg = Msg;
+    type BufR<'r> = Buf<Msg>;
 
-    fn recv(&mut self) -> Result<Option<piton::Msg<Self::BufR<'_>>>, Error> {
+    fn recv(&mut self) -> Result<Option<Self::BufR<'_>>, Error> {
         let buf = self.rx.recv().map_err(|_| Error::RxFail)?;
-        let Some(inner) = &buf.inner else {
-            return Ok(None);
-        };
-        let msg_type = u32::from_be_bytes(
-            inner[{ size_of::<usize>() }..HEADER_LENGTH]
-                .try_into()
-                .map_err(|_| Error::BufferUnderflow)?,
-        );
-
-        Ok(Some(Msg { req: buf, msg_type }))
+        Ok(Some(buf))
     }
 }
 
 #[derive(Clone)]
-pub struct BufW {
-    inner: Option<Box<[u8]>>,
-}
+pub struct Buf<T: Yule>(T);
 
-const HEADER_LENGTH: usize = 4 + size_of::<usize>();
-
-impl Buf for BufW {
-    fn can_insert<T>(&self) -> bool {
-        true
-    }
-
-    fn as_ref<T: bytecheck::CheckBytes<()>>(&self) -> Option<&T> {
-        match &self.inner {
-            Some(inner) => {
-                let addr = unsafe { inner.as_ptr().add(HEADER_LENGTH) } as *const u8;
-                let offset = addr.align_offset(align_of::<T>());
-                if inner.len() < offset {
-                    return None;
-                }
-                let ptr = addr.wrapping_add(offset) as *const T;
-                unsafe { T::check_bytes(ptr, &mut ()).ok() }
-            }
-            None => None,
-        }
-    }
-
-    fn as_mut<T: bytecheck::CheckBytes<()>>(&mut self) -> Option<&mut T> {
-        match &self.inner {
-            Some(inner) => {
-                let addr = unsafe { inner.as_ptr().add(HEADER_LENGTH) } as *const u8;
-                let offset = addr.align_offset(align_of::<T>());
-                if inner.len() < offset {
-                    return None;
-                }
-                let ptr = addr.wrapping_add(offset) as *mut T;
-                unsafe {
-                    T::check_bytes(ptr, &mut ()).ok()?;
-                    Some(&mut *ptr)
-                }
-            }
-            None => None,
-        }
-    }
-
-    unsafe fn as_maybe_uninit<T>(&mut self) -> &mut std::mem::MaybeUninit<T> {
-        let len = align_of::<T>() + size_of::<T>() + HEADER_LENGTH;
-        let buf = self.inner.insert(alloc_box_buffer(len));
-        let ptr = buf.as_mut_ptr().add(HEADER_LENGTH);
-        let offset = ptr.align_offset(align_of::<T>());
-        unsafe { &mut *(ptr.add(offset) as *mut MaybeUninit<T>) }
+impl<T: Yule> BufW<'_, T> for Buf<T> {
+    fn as_mut(&mut self) -> &mut T {
+        &mut self.0
     }
 }
 
-fn alloc_box_buffer(len: usize) -> Box<[u8]> {
-    if len == 0 {
-        return <Box<[u8]>>::default();
+impl<T: Yule> BufR<'_, T> for Buf<T> {
+    fn as_ref(&self) -> &T {
+        &self.0
     }
-    let layout = Layout::array::<u8>(len).expect("overflow");
-    let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
-    let slice_ptr = core::ptr::slice_from_raw_parts_mut(ptr, len);
-    unsafe { Box::from_raw(slice_ptr) }
+}
+
+impl<T: Yule> DerefMut for Buf<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl<T: Yule> Deref for Buf<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }

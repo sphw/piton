@@ -1,16 +1,17 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
+use bbqueue::{framed::FrameGrantR, BufStorage};
 use core::mem::align_of;
 use core::{
-    mem::{size_of, MaybeUninit},
+    marker::PhantomData,
+    mem::size_of,
+    ops::{Deref, DerefMut},
     sync::atomic::{AtomicUsize, Ordering},
 };
+use piton::{BufR as _, BufW as _, Error, ServiceRx, Yule};
 
-use bbqueue::{framed::FrameGrantR, BufStorage};
-use piton::{Error, ServiceRx};
-
-pub type Storage<const N: usize = { 4094 * 4 }> = Arc<BufStorage<N>>;
+pub type Storage<const N: usize = { 4096 * 4 }> = Arc<BufStorage<N>>;
 
 pub struct Tx<const N: usize> {
     signal: Arc<AtomicUsize>,
@@ -22,13 +23,14 @@ pub struct Rx<const N: usize> {
     cons: bbqueue::framed::FrameConsumer<Storage<N>>,
 }
 
-pub struct Server<const N: usize> {
+pub struct Server<const N: usize, Arg, Ret> {
     queue: bbqueue::BBBuffer<Storage<N>>,
     rx: Rx<N>,
     tx: Vec<Tx<N>>,
+    _phantom: PhantomData<(Arg, Ret)>,
 }
 
-impl<const N: usize> Default for Server<N> {
+impl<const N: usize, Arg, Ret> Default for Server<N, Arg, Ret> {
     fn default() -> Self {
         let queue = bbqueue::BBBuffer::new(Arc::new(BufStorage::new()));
         let cons = queue.frame_consumer().expect("consumer already created");
@@ -39,12 +41,13 @@ impl<const N: usize> Default for Server<N> {
                 signal: Arc::new(AtomicUsize::new(0)),
             },
             tx: vec![],
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<const N: usize> Server<N> {
-    pub fn client(&mut self) -> Client<N> {
+impl<const N: usize, Arg: Yule, Ret: Yule> Server<N, Arg, Ret> {
+    pub fn client(&mut self) -> Client<N, Arg, Ret> {
         let reply = bbqueue::BBBuffer::new(Arc::new(BufStorage::new()));
         let id = self.tx.len();
         let signal = Arc::new(AtomicUsize::new(0));
@@ -62,16 +65,20 @@ impl<const N: usize> Server<N> {
                 signal,
             },
             id,
+            _phantom: PhantomData,
         }
     }
 }
 
-impl<const N: usize> ServiceRx for Server<N> {
-    type Responder<'a> = Responder<'a, N>;
+impl<const N: usize, Arg: Yule, Ret: Yule> ServiceRx for Server<N, Arg, Ret> {
+    type Arg = Arg;
+    type Ret = Ret;
 
-    type BufR<'r> = BufR<N>;
+    type Responder<'a> = Responder<'a, N, Arg, Ret>;
 
-    type BufW<'r> = BufW<N>;
+    type BufR<'r> = BufR<N, Self::Arg>;
+
+    type BufW<'r> = BufW<N, Self::Ret>;
 
     fn recv(
         &mut self,
@@ -83,191 +90,202 @@ impl<const N: usize> ServiceRx for Server<N> {
                 .try_into()
                 .map_err(|_| Error::BufferUnderflow)?,
         );
-        let msg_type = u32::from_be_bytes(
-            buf[{ size_of::<usize>() }..HEADER_LENGTH]
-                .try_into()
-                .map_err(|_| Error::BufferUnderflow)?,
-        );
         let tx = &mut self.tx[id];
-        let resp = BufW(tx.prod.grant(1024).map_err(|_| Error::BufferUnderflow)?);
+        let mut resp = BufW {
+            grant: tx
+                .prod
+                .grant(size_of::<Ret>() + HEADER_LENGTH + align_of::<Ret>())
+                .map_err(|_| Error::BufferUnderflow)?,
+            _phantom: Default::default(),
+        };
+        resp.grant.fill(0);
         buf.auto_release(true);
         Ok(Some(piton::Recv {
-            req: BufR(buf),
+            req: BufR::new(buf)?,
             resp,
             responder: Responder {
                 signal: tx.signal.as_ref(),
+                _phantom: PhantomData,
             },
-            msg_type,
         }))
     }
 }
 
-pub struct Responder<'a, const N: usize> {
+pub struct Responder<'a, const N: usize, Arg, Ret> {
     signal: &'a AtomicUsize,
+    _phantom: PhantomData<(Arg, Ret)>,
 }
 
-impl<'a, const N: usize> piton::Responder for Responder<'a, N> {
-    type ServerTransport = Server<N>;
+impl<'a, const N: usize, Arg: Yule, Ret: Yule> piton::Responder for Responder<'a, N, Arg, Ret> {
+    type ServerTransport = Server<N, Arg, Ret>;
 
-    fn send<'r, 'm, M>(
-        self,
-        _req_type: u32,
-        msg: piton::TypedBuf<<Self::ServerTransport as ServiceRx>::BufW<'m>, M>,
-    ) -> Result<(), Error>
-    where
-        M: bytecheck::CheckBytes<()> + 'm,
-    {
-        msg.buf.commit::<M>();
+    fn send(self, msg: <Self::ServerTransport as ServiceRx>::BufW<'_>) -> Result<(), Error> {
+        msg.commit();
         self.signal.fetch_add(1, Ordering::Release);
         Ok(())
     }
 }
 
-pub struct Client<const N: usize> {
+pub struct Client<const N: usize, Arg, Ret> {
     id: usize,
     tx: Tx<N>,
     rx: Rx<N>,
+    _phantom: PhantomData<(Arg, Ret)>,
 }
 
-impl<const N: usize> piton::ServiceTx for Client<N> {
-    type BufW<'r> = BufW<N>;
+impl<const N: usize, Arg: Yule, Ret: Yule> piton::ServiceTx for Client<N, Arg, Ret> {
+    type Arg = Arg;
+    type Ret = Ret;
 
-    type BufR<'r> = BufR<N>;
+    type BufW<'r> = BufW<N, Arg>;
 
-    fn call<'r, 'm, M, R>(
-        &'r mut self,
-        req_type: u32,
-        mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<piton::TypedBuf<Self::BufR<'r>, R>, Error>
-    where
-        M: bytecheck::CheckBytes<()> + 'm,
-        R: bytecheck::CheckBytes<()> + 'r,
-    {
-        msg.buf.0[0..{ size_of::<usize>() }].copy_from_slice(&self.id.to_be_bytes());
-        msg.buf.0[{ size_of::<usize>() }..HEADER_LENGTH].copy_from_slice(&req_type.to_be_bytes());
-        msg.buf.commit::<M>();
+    type BufR<'r> = BufR<N, Ret>;
+
+    fn call<'r, 'm>(&'r mut self, mut msg: Self::BufW<'m>) -> Result<Self::BufR<'r>, Error> {
+        msg.grant[0..{ size_of::<usize>() }].copy_from_slice(&self.id.to_be_bytes());
+        msg.commit();
         self.tx.signal.fetch_add(1, Ordering::Release);
         let mut resp = self.rx.recv();
         resp.auto_release(true);
-        piton::TypedBuf::new(BufR(resp)).ok_or(Error::InvalidMsg)
+        BufR::new(resp)
     }
 
-    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error> {
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error> {
         self.tx
             .prod
-            .grant(capacity)
+            .grant(size_of::<Arg>() + HEADER_LENGTH + align_of::<Arg>())
             .map_err(|_| Error::BufferOverflow)
-            .map(BufW)
+            .map(|g| unsafe { BufW::new(g) })
     }
 }
 
-struct BusTx<const N: usize> {
+struct BusTx<const N: usize, Msg> {
     tx: Tx<N>,
+    _phantom: PhantomData<Msg>,
 }
 
-impl<const N: usize> piton::BusTx for BusTx<N> {
-    type BufW<'r> = BufW<N>;
+impl<const N: usize, Msg: Yule> piton::BusTx for BusTx<N, Msg> {
+    type Msg = Msg;
+    type BufW<'r> = BufW<N, Self::Msg>;
 
-    fn send<'r, 'm, M>(
-        &'r mut self,
-        req_type: u32,
-        mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
-    ) -> Result<(), Error>
-    where
-        M: bytecheck::CheckBytes<()> + 'm,
-    {
-        msg.buf.0[{ size_of::<usize>() }..HEADER_LENGTH].copy_from_slice(&req_type.to_be_bytes());
-        msg.buf.commit::<M>();
+    fn send(&mut self, msg: Self::BufW<'_>) -> Result<(), Error> {
+        msg.commit();
         self.tx.signal.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
-    fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error> {
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error> {
         self.tx
             .prod
-            .grant(capacity)
+            .grant(size_of::<Msg>() + align_of::<Msg>() + HEADER_LENGTH)
             .map_err(|_| Error::BufferOverflow)
-            .map(BufW)
+            .map(|g| unsafe { BufW::new(g) })
     }
 }
 
-struct BusRx<const N: usize> {
+struct BusRx<const N: usize, Msg> {
     rx: Rx<N>,
+    _phantom: PhantomData<Msg>,
 }
 
-impl<const N: usize> piton::BusRx for BusRx<N> {
-    type BufR<'r> = BufR<N>;
+impl<const N: usize, Msg: Yule> piton::BusRx for BusRx<N, Msg> {
+    type Msg = Msg;
+    type BufR<'r> = BufR<N, Msg>;
 
-    fn recv(&mut self) -> Result<Option<piton::Msg<Self::BufR<'_>>>, Error> {
+    fn recv(&mut self) -> Result<Option<Self::BufR<'_>>, Error> {
         let mut buf = self.rx.recv();
-        let msg_type = u32::from_be_bytes(
-            buf[{ size_of::<usize>() }..HEADER_LENGTH]
-                .try_into()
-                .map_err(|_| Error::BufferUnderflow)?,
-        );
         buf.auto_release(true);
-        Ok(Some(piton::Msg {
-            req: BufR(buf),
-            msg_type,
-        }))
+        Ok(Some(BufR::new(buf)?))
     }
 }
 
-const HEADER_LENGTH: usize = 4 + size_of::<usize>();
+const HEADER_LENGTH: usize = size_of::<usize>();
 
-pub struct BufW<const N: usize>(bbqueue::framed::FrameGrantW<Storage<N>>);
+pub struct BufW<const N: usize, T> {
+    grant: bbqueue::framed::FrameGrantW<Storage<N>>,
+    _phantom: PhantomData<T>,
+}
 
-impl<const N: usize> BufW<N> {
-    fn commit<T>(self) {
-        self.0
+impl<const N: usize, T> BufW<N, T> {
+    /// Safety: Ensure grant is zeroed before calling this method
+    unsafe fn new(grant: bbqueue::framed::FrameGrantW<Storage<N>>) -> Self {
+        //assert!(grant.len() >= size_of::<T>() + HEADER_LENGTH + align_of::<T>());
+        Self {
+            grant,
+            _phantom: Default::default(),
+        }
+    }
+}
+
+impl<'a, const N: usize, T: piton::Yule> piton::BufW<'a, T> for BufW<N, T> {
+    fn as_mut(&mut self) -> &mut T {
+        let addr = self.grant.as_ptr();
+        let offset = addr.align_offset(align_of::<T>()) + HEADER_LENGTH;
+        // Safety: BufW's contents are validated on creation
+        unsafe { T::from_mut_slice_unchecked(&mut self.grant.deref_mut()[offset..]) }
+    }
+}
+impl<'a, const N: usize, T: piton::Yule> piton::BufR<'a, T> for BufW<N, T> {
+    fn as_ref(&self) -> &T {
+        let addr = self.grant.as_ptr();
+        let offset = addr.align_offset(align_of::<T>()) + HEADER_LENGTH;
+        // Safety: BufW's contents are validated on creation
+        unsafe { T::from_slice_unchecked(&self.grant.deref()[offset..]) }
+    }
+}
+
+impl<const N: usize, T: piton::Yule> DerefMut for BufW<N, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        self.as_mut()
+    }
+}
+impl<const N: usize, T: piton::Yule> Deref for BufW<N, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.as_ref()
+    }
+}
+
+impl<const N: usize, T: piton::Yule> Deref for BufR<N, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        self.as_ref()
+    }
+}
+impl<'a, const N: usize, T: piton::Yule> piton::BufR<'a, T> for BufR<N, T> {
+    fn as_ref(&self) -> &T {
+        let addr = self.grant.as_ptr();
+        let offset = addr.align_offset(align_of::<T>()) + HEADER_LENGTH;
+        // Safety: BufW's contents are validated on creation
+        unsafe { T::from_slice_unchecked(&self.grant.deref()[offset..]) }
+    }
+}
+
+impl<const N: usize, T> BufW<N, T> {
+    fn commit(self) {
+        self.grant
             .commit(size_of::<T>() + align_of::<T>() + HEADER_LENGTH)
     }
 }
-pub struct BufR<const N: usize>(bbqueue::framed::FrameGrantR<Storage<N>>);
-
-macro_rules! impl_buf {
-    ($struct_n:ident) => {
-        impl<const N: usize> piton::Buf for $struct_n<N> {
-            fn can_insert<T>(&self) -> bool {
-                (core::mem::size_of::<T>() + align_of::<T>() + HEADER_LENGTH) <= self.0.len()
-            }
-
-            fn as_ref<T: bytecheck::CheckBytes<()>>(&self) -> Option<&T> {
-                // TODO: fix safety here
-                unsafe {
-                    let ptr = align_up(
-                        self.0.as_ptr().add(HEADER_LENGTH) as *mut u8,
-                        align_of::<T>(),
-                    ) as *mut T;
-                    T::check_bytes(ptr, &mut ()).ok()
-                }
-            }
-
-            fn as_mut<T: bytecheck::CheckBytes<()>>(&mut self) -> Option<&mut T> {
-                unsafe {
-                    let ptr =
-                        align_up(self.0.as_mut_ptr().add(HEADER_LENGTH), align_of::<T>()) as *mut T;
-                    // TODO: check bounds maybe?
-                    let _ = T::check_bytes(ptr, &mut ()).ok()?;
-                    Some(&mut *(ptr))
-                }
-            }
-
-            // Safety: Assumes there is enough room for the object plus alignment
-            unsafe fn as_maybe_uninit<T>(&mut self) -> &mut MaybeUninit<T> {
-                let align = align_of::<T>();
-                let ptr =
-                    align_up(self.0.as_mut_ptr().add(HEADER_LENGTH), align) as *mut MaybeUninit<T>;
-                &mut *ptr
-            }
-        }
-    };
+pub struct BufR<const N: usize, T> {
+    grant: bbqueue::framed::FrameGrantR<Storage<N>>,
+    _phantom: PhantomData<T>,
 }
 
-// source: https://github.com/rust-osdev/linked-list-allocator/blob/c2aa6ec6de74cd7f1bee4a7db964ebce3d7574b6/src/lib.rs#L369
-fn align_up(addr: *mut u8, align: usize) -> *mut u8 {
-    let offset = addr.align_offset(align);
-    addr.wrapping_add(offset)
+impl<const N: usize, T: Yule> BufR<N, T> {
+    fn new(grant: bbqueue::framed::FrameGrantR<Storage<N>>) -> Result<Self, Error> {
+        let addr = grant.as_ptr();
+        let offset = addr.align_offset(align_of::<T>()) + HEADER_LENGTH;
+        if !T::validate(&grant[offset..]) {
+            return Err(Error::InvalidMsg);
+        }
+        Ok(BufR {
+            grant,
+            _phantom: Default::default(),
+        })
+    }
 }
 
 fn spin_wait(signal: &AtomicUsize) {
@@ -280,9 +298,6 @@ fn spin_wait(signal: &AtomicUsize) {
 impl<const N: usize> Rx<N> {
     fn recv(&mut self) -> FrameGrantR<Storage<N>> {
         spin_wait(self.signal.as_ref());
-        self.cons.read().unwrap()
+        self.cons.read().expect("race condition")
     }
 }
-
-impl_buf! { BufW }
-impl_buf! { BufR }
