@@ -159,56 +159,45 @@ impl<const N: usize, Arg: Yule, Ret: Yule> piton::ServiceTx for Client<N, Arg, R
     }
 }
 
-// struct BusTx<const N: usize> {
-//     tx: Tx<N>,
-// }
+struct BusTx<const N: usize, Msg> {
+    tx: Tx<N>,
+    _phantom: PhantomData<Msg>,
+}
 
-// impl<const N: usize> piton::BusTx for BusTx<N> {
-//     type BufW<'r> = BufW<N>;
+impl<const N: usize, Msg: Yule> piton::BusTx for BusTx<N, Msg> {
+    type Msg = Msg;
+    type BufW<'r> = BufW<N, Self::Msg>;
 
-//     fn send<'r, 'm, M>(
-//         &'r mut self,
-//         mut msg: piton::TypedBuf<Self::BufW<'m>, M>,
-//     ) -> Result<(), Error>
-//     where
-//         M: bytecheck::CheckBytes<()> + 'm,
-//     {
-//         msg.buf.0[{ size_of::<usize>() }..HEADER_LENGTH].copy_from_slice(&req_type.to_be_bytes());
-//         msg.buf.commit::<M>();
-//         self.tx.signal.fetch_add(1, Ordering::Release);
-//         Ok(())
-//     }
+    fn send(&mut self, msg: Self::BufW<'_>) -> Result<(), Error> {
+        msg.commit();
+        self.tx.signal.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
 
-//     fn alloc<'r>(&mut self, capacity: usize) -> Result<Self::BufW<'r>, Error> {
-//         self.tx
-//             .prod
-//             .grant(capacity)
-//             .map_err(|_| Error::BufferOverflow)
-//             .map(BufW)
-//     }
-// }
+    fn alloc<'r>(&mut self) -> Result<Self::BufW<'r>, Error> {
+        self.tx
+            .prod
+            .grant(size_of::<Msg>() + align_of::<Msg>() + HEADER_LENGTH)
+            .map_err(|_| Error::BufferOverflow)
+            .map(|g| unsafe { BufW::new(g) })
+    }
+}
 
-// struct BusRx<const N: usize> {
-//     rx: Rx<N>,
-// }
+struct BusRx<const N: usize, Msg> {
+    rx: Rx<N>,
+    _phantom: PhantomData<Msg>,
+}
 
-// impl<const N: usize> piton::BusRx for BusRx<N> {
-//     type BufR<'r> = BufR<N>;
+impl<const N: usize, Msg: Yule> piton::BusRx for BusRx<N, Msg> {
+    type Msg = Msg;
+    type BufR<'r> = BufR<N, Msg>;
 
-//     fn recv(&mut self) -> Result<Option<piton::Msg<Self::BufR<'_>>>, Error> {
-//         let mut buf = self.rx.recv();
-//         let msg_type = u32::from_be_bytes(
-//             buf[{ size_of::<usize>() }..HEADER_LENGTH]
-//                 .try_into()
-//                 .map_err(|_| Error::BufferUnderflow)?,
-//         );
-//         buf.auto_release(true);
-//         Ok(Some(piton::Msg {
-//             req: BufR(buf),
-//             msg_type,
-//         }))
-//    }
-//}
+    fn recv(&mut self) -> Result<Option<Self::BufR<'_>>, Error> {
+        let mut buf = self.rx.recv();
+        buf.auto_release(true);
+        Ok(Some(BufR::new(buf)?))
+    }
+}
 
 const HEADER_LENGTH: usize = size_of::<usize>();
 

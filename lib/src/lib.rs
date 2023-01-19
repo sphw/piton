@@ -191,54 +191,6 @@ pub struct Recv<BW, BR, R> {
     pub responder: R,
 }
 
-// /// A wrapper around a [`Buf`] that is typed
-// pub struct TypedBuf<B, T> {
-//     pub buf: B,
-//     _phantom: PhantomData<T>,
-// }
-
-// impl<T: bytecheck::CheckBytes<()>, B: Buf> TypedBuf<B, T> {
-//     /// Creates a new [`TypedBuf`] from a [`Buf`].
-//     ///
-//     /// This functions returns `None` is `Buf` is not a valid `T`
-//     pub fn new(buf: B) -> Option<Self> {
-//         if !buf.can_insert::<T>() {
-//             return None;
-//         }
-//         Some(Self {
-//             buf,
-//             _phantom: PhantomData,
-//         })
-//     }
-
-//     /// Inserts `T` into the typed-buf, and returns a [`InsertToken`]
-//     pub fn insert(&mut self, obj: T) -> InsertToken<B, T> {
-//         unsafe {
-//             self.buf.as_maybe_uninit().write(obj);
-//             InsertToken::new()
-//         }
-//     }
-
-//     /// Returns a reference to type if the buf contains a valid `T`
-//     pub fn as_ref(&self) -> Option<&T> {
-//         self.buf.as_ref()
-//     }
-
-//     /// Returns a mutable reference to type if the buf contains a valid `T`
-//     pub fn as_mut(&mut self) -> Option<&mut T> {
-//         self.buf.as_mut()
-//     }
-// }
-
-// /// A insert token that repersents the result of [`TypedBuf::insert`]. This is used to force a user to write into a buffer before returning from a function
-// pub struct InsertToken<B, T>(PhantomData<(B, T)>);
-
-// impl<B, T> InsertToken<B, T> {
-//     unsafe fn new() -> InsertToken<B, T> {
-//         InsertToken(PhantomData)
-//     }
-// }
-
 /// `Responder` is implemented by structs that allow a user to respond to a request.
 pub trait Responder {
     /// The [`ServiceRx`] that this responder is associated with
