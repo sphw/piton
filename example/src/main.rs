@@ -2,7 +2,7 @@ use std::marker::PhantomData;
 
 use core::ops::Deref;
 use driver::DriverService;
-use piton::ServiceRx;
+use piton::{types::u16le, ServiceRx};
 use piton_bbq::*;
 
 #[allow(unused_variables)]
@@ -47,14 +47,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = server.client();
     let server = std::thread::spawn(move || {
         let server =
-            driver::DriverServer::new(server, Service::<Server<{ 4096 * 16 }, _, _>, u16>::new());
+            driver::DriverServer::new(server, Service::<Server<{ 4096 * 16 }, _, _>, u16le>::new());
         server.run()
     });
     let client = std::thread::spawn(move || {
-        let mut client = driver::DriverClient::<_, u16>::new(client);
+        let mut client = driver::DriverClient::<_, u16le>::new(client);
         loop {
             let mut call_ref = client.xyz_ref().unwrap();
-            *call_ref = driver::Bar::B(0xFF);
+            *call_ref = driver::Bar::B(0xFF.into());
             let resp = call_ref.call().unwrap();
             println!("resp {:?}", resp.deref());
             drop(resp);

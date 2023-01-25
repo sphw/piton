@@ -1,6 +1,6 @@
 //#![cfg_attr(not(feature = "std"), no_std)]
 
-pub mod std;
+pub mod types;
 
 use core::{
     mem::{align_of, size_of},
@@ -61,24 +61,6 @@ pub unsafe trait Yule:
         unsafe { core::slice::from_raw_parts(self as *const Self as *const u8, size_of::<Self>()) }
     }
 }
-
-macro_rules! primative_yule_impl {
-    ($prim:ident) => {
-        unsafe impl Yule for $prim {}
-    };
-}
-
-primative_yule_impl! { u64 }
-primative_yule_impl! { u32 }
-primative_yule_impl! { u16 }
-primative_yule_impl! { u8 }
-primative_yule_impl! { i64 }
-primative_yule_impl! { i32 }
-primative_yule_impl! { i16 }
-primative_yule_impl! { i8 }
-primative_yule_impl! { f64 }
-primative_yule_impl! { f32 }
-primative_yule_impl! { bool }
 
 pub trait BufR<'a, T>: Deref<Target = T>
 where

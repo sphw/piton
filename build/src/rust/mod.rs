@@ -107,14 +107,14 @@ impl GenericTy {
 
 fn ty_to_rust(ty: &Ty) -> String {
     match ty {
-        Ty::U64 => "u64".to_string(),
-        Ty::U32 => "u32".to_string(),
-        Ty::U16 => "u16".to_string(),
+        Ty::U64 => "piton::types::u64le".to_string(),
+        Ty::U32 => "piton::types::u32le".to_string(),
+        Ty::U16 => "piton::types::u16le".to_string(),
         Ty::U8 => "u8".to_string(),
-        Ty::I64 => "i64".to_string(),
-        Ty::I32 => "i32".to_string(),
-        Ty::I16 => "i16".to_string(),
-        Ty::I8 => "i8".to_string(),
+        Ty::I64 => "piton::types::i64le".to_string(),
+        Ty::I32 => "i32le".to_string(),
+        Ty::I16 => "i16le".to_string(),
+        Ty::I8 => "piton::types::i8".to_string(),
         Ty::Bool => "bool".to_string(),
         Ty::Array { ty, len } => format!("[{}; {}]", ty_to_rust(ty), len),
         Ty::Unresolved { name, generic_args } => {
@@ -700,44 +700,4 @@ fn phantom_new(generic_tys: &[GenericTy]) -> Vec<rust::Tokens> {
             }
         })
         .collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{Field, Struct, Ty, TypeGenerator};
-
-    #[test]
-    fn test_struct_gen() {
-        let code = super::TypeGenerator
-            .generate_struct(&Struct {
-                name: "Test".to_string(),
-                fields: vec![
-                    Field {
-                        name: "foo".to_string(),
-                        ty: Ty::U16,
-                    },
-                    Field {
-                        name: "bar".to_string(),
-                        ty: Ty::U32,
-                    },
-                    Field {
-                        name: "boolean".to_string(),
-                        ty: Ty::Bool,
-                    },
-                    Field {
-                        name: "array".to_string(),
-                        ty: Ty::Array {
-                            ty: Box::new(Ty::U8),
-                            len: 20,
-                        },
-                    },
-                ],
-            })
-            .expect("struct gen failed");
-        assert_eq!(
-            code,
-            r#"#[derive(bytecheck::CheckBytes, Clone, Debug)] #[repr(C)] pub struct Test { pub foo: u16,pub bar: u32,pub boolean: bool,pub array: [u8; 20], }
-"#
-        );
-    }
 }

@@ -1,3 +1,4 @@
+use super::u64le;
 use core::{
     mem::MaybeUninit,
     ops::{Deref, DerefMut},
@@ -8,7 +9,7 @@ use core::{
 use bytecheck::{CheckBytes, StructCheckError};
 
 pub struct Vec<T, const N: usize> {
-    len: u64,
+    len: u64le,
     buf: [MaybeUninit<T>; N],
 }
 
@@ -24,7 +25,7 @@ impl<C, T: CheckBytes<C>, const N: usize> CheckBytes<C> for Vec<T, N> {
         value: *const Self,
         context: &mut C,
     ) -> ::core::result::Result<&'__bytecheck Self, StructCheckError> {
-        <u64 as CheckBytes<C>>::check_bytes(addr_of!((*value).len), context)
+        <u64le as CheckBytes<C>>::check_bytes(addr_of!((*value).len), context)
             .map_err(|_e| StructCheckError { field_name: "len" })?;
         let bytes = (*value).buf.as_ptr() as *const T;
         for index in 0..N {
@@ -51,26 +52,28 @@ impl<T, const N: usize> Vec<T, N> {
     pub const fn new() -> Self {
         Self {
             buf: Self::INIT,
-            len: 0,
+            len: u64le::new(0),
         }
     }
 
     pub fn push(&mut self, elem: T) -> Result<(), T> {
-        if self.len >= (N as u64) {
+        if u64::from(self.len) >= (N as u64) {
             return Err(elem);
         }
-        self.buf[self.len as usize].write(elem);
+        self.buf[u64::from(self.len) as usize].write(elem);
         self.len += 1;
         Ok(())
     }
 
     pub fn push_unchecked(&mut self, elem: T) {
-        self.buf[self.len as usize].write(elem);
+        self.buf[u64::from(self.len) as usize].write(elem);
         self.len += 1;
     }
 
     pub fn as_slice(&self) -> &[T] {
-        unsafe { slice::from_raw_parts(self.buf.as_ptr() as *const T, self.len as usize) }
+        unsafe {
+            slice::from_raw_parts(self.buf.as_ptr() as *const T, u64::from(self.len) as usize)
+        }
     }
 }
 
@@ -90,7 +93,12 @@ impl<T, const N: usize> Deref for Vec<T, N> {
 
 impl<T, const N: usize> DerefMut for Vec<T, N> {
     fn deref_mut(&mut self) -> &mut [T] {
-        unsafe { slice::from_raw_parts_mut(self.buf.as_mut_ptr() as *mut T, self.len as usize) }
+        unsafe {
+            slice::from_raw_parts_mut(
+                self.buf.as_mut_ptr() as *mut T,
+                u64::from(self.len) as usize,
+            )
+        }
     }
 }
 
