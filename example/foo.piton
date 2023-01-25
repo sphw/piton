@@ -25,5 +25,5 @@ bus TestBus<D> {
 }
 
 extern Vec<T, const N: usize> {
-    concrete rust = t"piton::std::Vec<${T}, ${N}>"
+    concrete rust = t"piton::types::Vec<${T}, ${N}>"
 }

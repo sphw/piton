@@ -10,4 +10,3 @@ std = []
 
 [dependencies]
 bytecheck = { git = "https://github.com/sphw/bytecheck.git", branch = "alloc-feature", default-features = false }
-zerocopy = "0.6.1"
