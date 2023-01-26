@@ -1,3 +1,4 @@
+mod cpp;
 mod rust;
 mod ty;
 
@@ -483,6 +484,81 @@ impl RustBuilder {
             .and_then(|f| f.to_str())
             .ok_or_else(|| miette::miette!("invalid file stem"))?;
         fs::write(out.join(format!("{}.rs", file_stem)), o).into_diagnostic()?;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+pub struct CppBuilder {
+    types: bool,
+    out_dir: Option<PathBuf>,
+}
+
+impl CppBuilder {
+    pub fn types(mut self) -> Self {
+        self.types = true;
+        self
+    }
+
+    pub fn out_dir(mut self, out_dir: PathBuf) -> Self {
+        self.out_dir = Some(out_dir);
+        self
+    }
+
+    pub fn build(self, path: impl AsRef<Path>) -> miette::Result<()> {
+        let path = path.as_ref();
+        let doc = std::fs::read_to_string(path).into_diagnostic()?;
+        let mut exprs = piton_parser::exprs(&doc).map_err(|err| ParseError {
+            src: NamedSource::new(
+                path.file_name()
+                    .and_then(|s| s.to_str())
+                    .expect("non utf8 filename"),
+                doc,
+            ),
+            source_span: (err.location.offset, 1).into(),
+            msg: format!("expected {}", err.expected),
+        })?;
+
+        let mut checker = TyChecker::default();
+        for expr in &exprs {
+            checker.visit_expr(expr);
+        }
+        for expr in &mut exprs {
+            checker.resolve_expr(expr)?;
+        }
+        for expr in &mut exprs {
+            let mut checker = LayoutChecker::default();
+            if let Expr::Struct(ref mut s) = expr {
+                let name = s.ty_def.name.clone();
+                println!("struct {name}");
+                for field in &s.fields {
+                    checker
+                        .next_field(field.ty.layout())
+                        .wrap_err(format!("{name}, {}", field.name))?;
+                }
+                let final_pad = checker.final_pad();
+                if final_pad > 0 {
+                    s.fields.push(Field {
+                        name: "_pad".to_string(),
+                        ty: Ty::Extern(format!("piton::ZeroPad<{}>", final_pad)),
+                    })
+                }
+            }
+        }
+
+        let mut o = String::default();
+        if self.types {
+            o += &cpp::TypeGenerator.generate(&exprs)?;
+        }
+        let out = env::var_os("OUT_DIR")
+            .map(|d| PathBuf::from(d.to_str().unwrap()))
+            .or(self.out_dir)
+            .ok_or_else(|| miette::miette!("no out dir"))?;
+        let file_stem = path
+            .file_stem()
+            .and_then(|f| f.to_str())
+            .ok_or_else(|| miette::miette!("invalid file stem"))?;
+        fs::write(out.join(format!("{}.hpp", file_stem)), o).into_diagnostic()?;
         Ok(())
     }
 }

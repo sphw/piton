@@ -23,7 +23,7 @@ impl super::TypeGenerator for TypeGenerator {
             #[derive(bytecheck::CheckBytes, Clone, Debug, PartialEq, Eq, Default)]
             #[repr(C)]
             pub struct $(&s.ty_def.name) $(&generic_args) {
-                $(for field in &s.fields => pub $(&field.name): $(ty_to_rust(&field.ty)),)
+                $(for field in &s.fields => pub $(&field.name): $(&field.ty.to_rust()),)
             }
 
             unsafe impl<$(generic_tys)> piton::Yule for $(&s.ty_def.name) $(generic_args) {}
@@ -38,7 +38,7 @@ impl super::TypeGenerator for TypeGenerator {
             .map(|var| {
                 if let Some(ty) = &var.ty {
                     quote! {
-                        $(var.name.to_case(Case::Pascal))($(ty_to_rust(ty))),
+                        $(var.name.to_case(Case::Pascal))($(ty.to_rust())),
                     }
                 } else {
                     quote! {
@@ -90,7 +90,7 @@ impl super::TypeGenerator for TypeGenerator {
 impl GenericArg {
     pub fn to_rust(&self) -> String {
         match self {
-            GenericArg::Ty(ty) => ty_to_rust(ty),
+            GenericArg::Ty(ty) => ty.to_rust(),
             GenericArg::Const(ty) => format!("{}", ty),
         }
     }
@@ -100,41 +100,43 @@ impl GenericTy {
     pub fn to_rust(&self) -> String {
         match self {
             GenericTy::Ty(ty) => ty.clone(),
-            GenericTy::Const { ty, name } => format!("const {}: {}", name, ty_to_rust(ty)),
+            GenericTy::Const { ty, name } => format!("const {}: {}", name, ty.to_rust()),
         }
     }
 }
 
-fn ty_to_rust(ty: &Ty) -> String {
-    match ty {
-        Ty::U64 => "piton::types::u64le".to_string(),
-        Ty::U32 => "piton::types::u32le".to_string(),
-        Ty::U16 => "piton::types::u16le".to_string(),
-        Ty::U8 => "u8".to_string(),
-        Ty::I64 => "piton::types::i64le".to_string(),
-        Ty::I32 => "i32le".to_string(),
-        Ty::I16 => "i16le".to_string(),
-        Ty::I8 => "piton::types::i8".to_string(),
-        Ty::Bool => "bool".to_string(),
-        Ty::Array { ty, len } => format!("[{}; {}]", ty_to_rust(ty), len),
-        Ty::Unresolved { name, generic_args } => {
-            let args = if generic_args.is_empty() {
-                "".to_string()
-            } else {
-                format!(
-                    "<{}>",
-                    generic_args
-                        .iter()
-                        .map(GenericArg::to_rust)
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            };
-            format!("{}{}", name, args)
+impl Ty {
+    fn to_rust(&self) -> String {
+        match &self {
+            Ty::U64 => "piton::types::u64le".to_string(),
+            Ty::U32 => "piton::types::u32le".to_string(),
+            Ty::U16 => "piton::types::u16le".to_string(),
+            Ty::U8 => "u8".to_string(),
+            Ty::I64 => "piton::types::i64le".to_string(),
+            Ty::I32 => "i32le".to_string(),
+            Ty::I16 => "i16le".to_string(),
+            Ty::I8 => "piton::types::i8".to_string(),
+            Ty::Bool => "bool".to_string(),
+            Ty::Array { ty, len } => format!("[{}; {}]", ty.to_rust(), len),
+            Ty::Unresolved { name, generic_args } => {
+                let args = if generic_args.is_empty() {
+                    "".to_string()
+                } else {
+                    format!(
+                        "<{}>",
+                        generic_args
+                            .iter()
+                            .map(GenericArg::to_rust)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                };
+                format!("{}{}", name, args)
+            }
+            Ty::F32 => "f32".to_string(),
+            Ty::F64 => "f64".to_string(),
+            Ty::Extern(e) => e.clone(),
         }
-        Ty::F32 => "f32".to_string(),
-        Ty::F64 => "f64".to_string(),
-        Ty::Extern(e) => e.clone(),
     }
 }
 
@@ -147,7 +149,7 @@ impl crate::ServiceGenerator for ServiceGenerator {
         hasher.write(service.ty_def.name.as_bytes());
         let trait_methods: Vec<rust::Tokens> = service.methods.iter().map(|method| {
             quote! {
-                fn $(method.name.to_case(Case::Snake))(&mut self, msg: &$(ty_to_rust(&method.arg_ty)), resp: &mut $(ty_to_rust(&method.return_ty))) -> Result<(), piton::Error>;
+                fn $(method.name.to_case(Case::Snake))(&mut self, msg: &$(&method.arg_ty.to_rust()), resp: &mut $(&method.return_ty.to_rust())) -> Result<(), piton::Error>;
             }
         }).collect();
 
@@ -304,7 +306,7 @@ impl crate::ServiceGenerator for ClientGenerator {
                     }
 
                     impl<'a, S: piton::ServiceTx<Arg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)CallRef<'a, S, $(&generic_args)> {
-                        type Target = $(ty_to_rust(arg_ty));
+                        type Target = $(arg_ty.to_rust());
 
                         fn deref(&self) -> &Self::Target {
                             #[allow(irrefutable_let_patterns)]
@@ -330,7 +332,7 @@ impl crate::ServiceGenerator for ClientGenerator {
                     }
 
                     impl<'a, S: piton::ServiceTx<Ret = $(&ret_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)RetRef<'a, S, $(&generic_args)> {
-                        type Target = $(ty_to_rust(return_ty));
+                        type Target = $(return_ty.to_rust());
 
                         fn deref(&self) -> &Self::Target {
                             #[allow(irrefutable_let_patterns)]
@@ -391,7 +393,7 @@ impl crate::ServiceGenerator for ReqGenerator {
             #[derive(bytecheck::CheckBytes, Clone)]
             #[repr(u32)]
             pub enum $(&pascal_name)Req$(&generic_args) {
-                $(for method in service.methods.iter() => $(method.name.to_case(Case::Pascal))($(ty_to_rust(&method.arg_ty))),)
+                $(for method in service.methods.iter() => $(method.name.to_case(Case::Pascal))($(&method.arg_ty.to_rust())),)
             }
             impl$(&generic_args) core::default::Default for $(&pascal_name)Req<$(&generic_tys)> {
                 fn default() -> Self { Self::$(first_method.name.to_case(Case::Pascal))(Default::default()) }
@@ -402,7 +404,7 @@ impl crate::ServiceGenerator for ReqGenerator {
             #[derive(bytecheck::CheckBytes, Clone)]
             #[repr(u32)]
             pub enum $(&pascal_name)Ret$(&generic_args) {
-                $(for method in service.methods.iter() => $(method.name.to_case(Case::Pascal))($(ty_to_rust(&method.return_ty))),)
+                $(for method in service.methods.iter() => $(method.name.to_case(Case::Pascal))($(&method.return_ty.to_rust())),)
             }
 
             impl$(&generic_args) core::default::Default for $(&pascal_name)Ret<$(&generic_tys)> {
@@ -437,7 +439,7 @@ impl crate::BusGenerator for MsgGenerator {
             #[derive(bytecheck::CheckBytes, Clone)]
             #[repr(u32)]
             pub enum $(&pascal_name)Msg$(&generic_args){
-                $(for method in bus.msgs.iter() => $(method.name.to_case(Case::Pascal))($(ty_to_rust(&method.ty))),)
+                $(for method in bus.msgs.iter() => $(method.name.to_case(Case::Pascal))($(&method.ty.to_rust())),)
             }
 
             impl$(&generic_args) core::default::Default for $(&pascal_name)Msg<$(&generic_tys)> {
@@ -522,7 +524,7 @@ impl crate::BusGenerator for BusTxGenerator {
                     }
 
                     impl<'a, S: piton::BusTx<Msg = $(&req_enum)$(&generic_enum_args)> + 'a, $(&generic_tys)> core::ops::Deref for $(&method_pascal)SendRef<'a, S, $(&generic_args)> {
-                        type Target = $(ty_to_rust(arg_ty));
+                        type Target = $(arg_ty.to_rust());
 
                         fn deref(&self) -> &Self::Target {
                             #[allow(irrefutable_let_patterns)]
@@ -579,7 +581,7 @@ impl crate::BusGenerator for BusRxGenerator {
         hasher.write(service.ty_def.name.as_bytes());
         let trait_methods: Vec<rust::Tokens> = service.msgs.iter().map(|method| {
             quote! {
-                fn $(method.name.to_case(Case::Snake))(&mut self, msg: & $(ty_to_rust(&method.ty))) -> Result<(), piton::Error>;
+                fn $(method.name.to_case(Case::Snake))(&mut self, msg: & $(&method.ty.to_rust())) -> Result<(), piton::Error>;
             }
         }).collect();
 

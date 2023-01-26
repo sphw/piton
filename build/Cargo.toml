@@ -7,11 +7,6 @@ edition = "2021"
 name = "piton_build"
 path = "src/lib.rs"
 
-[[bin]]
-name = "pitonc"
-path = "src/bin/pitonc.rs"
-
-
 [dependencies]
 convert_case = "0.5.0"
 miette = { version="4.3.0", features=["fancy"] }
