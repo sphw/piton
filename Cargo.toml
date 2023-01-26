@@ -4,5 +4,6 @@ members = [
   "build",
   "example",
   "transports/bbq",
-  "transports/multiqueue"
+  "transports/multiqueue",
+  "pitonc"
 ]
